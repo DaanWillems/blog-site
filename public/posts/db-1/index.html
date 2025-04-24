@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en-us"><head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=1313&amp;path=livereload" data-no-instant defer></script>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+   <meta name="description" content="Small summary">  
+
+  <title>
+    
+      Building a database: Getting Started
+    
+  </title>
+
+
+  <link rel="shortcut icon" type="image/x-icon" href="/" />
+  
+  
+  
+  <link rel="stylesheet" href="/css/main.18e297f9c7b534b566a0a070712181cc69b4f1155e1b8d1fe541304605c4f6ab7d7460a557a004bf67fd09787aef348cf619f6dd8d310362898a41b1465ddd4d.css" integrity="sha512-GOKX&#43;ce1NLVmoKBwcSGBzGm08RVeG40f5UEwRgXE9qt9dGClV6AEv2f9CXh67zSM9hn23Y0xA2KJikGxRl3dTQ==" />
+  
+</head>
+<body a="auto">
+        <main class="page-content" aria-label="Content">
+            <div class="w">
+                <div class="post-meta">
+                    <a href="/">..</a>
+
+                    <p>
+                        <time datetime="2025-04-24 00:00:00 &#43;0000 UTC">
+                            2025-04-24
+                        </time>
+                    </p>
+                </div>
+
+<article>
+    <h1>Building a database: Getting Started</h1>
+
+    
+        <aside >
+            <nav id="TableOfContents">
+  <ul>
+    <li><a href="#requirements">Requirements</a>
+      <ul>
+        <li><a href="#schema-and-query-language">Schema and Query Language</a></li>
+      </ul>
+    </li>
+    <li><a href="#storing-data-on-disk">Storing data on disk</a></li>
+    <li><a href="#designing-the-database">Designing the database</a>
+      <ul>
+        <li><a href="#inserting">Inserting</a></li>
+        <li><a href="#updating">Updating</a></li>
+        <li><a href="#reading">Reading</a></li>
+        <li><a href="#deleting">Deleting</a></li>
+      </ul>
+    </li>
+    <li><a href="#a-first-implementation">A first implementation</a>
+      <ul>
+        <li><a href="#memtables">Memtables</a></li>
+      </ul>
+    </li>
+  </ul>
+</nav>
+        </aside>
+    
+
+    <p>In almost every project I ever built, a database was a central component. Often I&rsquo;d read online about what specific database engines excelled in, and what they lacked. However, I never fully understood what this meant exactly. That always irritated me. I think in cases like this, the best way to learn more about a topic is to try build something myself. So I set out with very little knowledge but a lot of optimism to try built my own database engine.</p>
+<p>In this part I try to make a rough plan for building the database.</p>
+<h2 id="requirements">Requirements</h2>
+<p>Before starting with anything, it is important determine what requirements there are for the database. Clear requirements can direct the design while also preventing unnecessary work.</p>
+<ul>
+<li>Data written must be persistent (not lost on system restarts)</li>
+<li>The database must be crash resistant</li>
+<li>There should be some sort of schema to define what the data looks like</li>
+<li>It must support: strings, integers and booleans.</li>
+<li>It must support: Defining a primary key</li>
+<li>There should be a way of interfacing with the database (inserting, reading, updating and deleting data)</li>
+<li>There should be a primary index to speed up finding data</li>
+<li>The database should be optimized for quick writes</li>
+</ul>
+<p>Some things that are unnecessary (for now):</p>
+<ul>
+<li>It is not an a relational database, so no need to represent relations</li>
+<li>No secondary indexes (Indexes on fields other than the primary key)</li>
+<li>Updating existing schema&rsquo;s</li>
+</ul>
+<h3 id="schema-and-query-language">Schema and Query Language</h3>
+<p>The schema should define what kind of data can be written to the database. It enforces that data is structured a certain way. The query language allows us to insert, read, update and delete data. We&rsquo;ll take heavy ‘inspiration’ from SQL to define our query language, which will also be used to define the schema.</p>
+<p>I want the schema to support tables, so we can have multiple structures. Tables consist of columns, where each column has a key and a type. One of the columns contains the primary key, which is used to build the primary index. Columns can have the values: string, integer and boolean. The query language should allow simple operations on the data, inserting, reading, updating and deleting. Given these requirements, let&rsquo;s define a grammar for the query language we&rsquo;ll call it: SSQL (Simple SQL).</p>
+<pre tabindex="0"><code>&lt;int&gt; ::= [0-9]+
+
+&lt;string&gt; ::= “[a-Z0-9_-]+&#34;
+
+&lt;bool&gt; ::= true
+
+&lt;bool&gt; ::= false
+
+&lt;type&gt; ::= int
+
+&lt;type&gt; ::= string
+
+&lt;type&gt; ::= bool
+
+&lt;expr&gt; ::= &lt;int&gt;
+
+&lt;expr&gt; ::= &lt;string&gt;
+
+&lt;expr&gt; ::= &lt;bool&gt;
+
+&lt;expr_list&gt; ::= &lt;expr_list&gt;
+
+&lt;expr_list&gt; ::= &lt;expr_list&gt;,  &lt;expr_list&gt;
+
+&lt;expr_list&gt; ::= &lt;expr&gt;
+
+&lt;expr_list&gt; ::= &lt;select_expr&gt;
+
+&lt;expr_list&gt; ::= &lt;select_expr&gt;,  &lt;select_expr&gt;
+
+&lt;select_expr&gt; ::= &lt;string&gt;
+
+&lt;key_marker&gt; ::= &lt;null&gt;
+
+&lt;key_marker&gt; ::= primary
+
+&lt;column_def&gt; ::= &lt;string&gt; &lt;type&gt; &lt;key_marker&gt;,
+
+&lt;where_expr&gt; ::= &lt;where_expr&gt; &amp;&amp; &lt;where_expr&gt;
+
+&lt;where_expr&gt; ::= &lt;where_expr&gt; || &lt;where_expr&gt;
+
+&lt;where_expr&gt; ::= &lt;string&gt; == &lt;expr&gt;
+
+&lt;where_expr&gt; ::= &lt;string&gt; != &lt;expr&gt;
+
+create table &lt;string&gt; {
+
+&lt;column_def&gt;
+
+};
+
+delete table &lt;string&gt;;
+
+select &lt;select_expr&gt; from &lt;string&gt; where &lt;where_expr&gt;;
+
+update &lt;string&gt; set &lt;expr_list&gt; where &lt;where_expr&gt;;
+
+delete from &lt;string&gt; where &lt;where_expr&gt;;
+
+insert into &lt;string&gt; values &lt;expr_list&gt;;
+</code></pre><p>This grammar is fully LL(1) compatible, and should therefore be pretty simple to parse. Now that is out of the way, let&rsquo;s move on to the actual data storing part.</p>
+<h2 id="storing-data-on-disk">Storing data on disk</h2>
+<p>A core part of a database is being able to store data persistently (on disk) and being able to search it.</p>
+<p>There are many ways of storing data safely on disk and accessing. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good atsearching through the data quickly, is it complicated to store a B-Tree on disk. SSTables excel at writing quickly, and are used for popular databases such as Cassandra.</p>
+<p>SSTables work by building a Sorted String table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in-memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SStable. Altered records can be added to a new SStable, deleted records are also added, and tombstoned (marked as deleted).</p>
+<p>Imagine a key value table written stored on disk. It includes a delete</p>
+<p>Table 1:</p>
+<pre tabindex="0"><code>Key, Deleted, Value
+
+1, False, &#34;a&#34;
+2, False, &#34;b&#34;
+3, False, &#34;c&#34;
+6, False, &#34;d&#34;
+</code></pre><p>At this point the user adds the record (4, &lsquo;a2&rsquo;), removed the record with id 2 and updataethe record 6 to value &lsquo;d2&rsquo;. These changes are written to a new table on disk:</p>
+<p>Table 2:</p>
+<pre tabindex="0"><code>Key, Deleted, Value
+
+2, True,  &#34;b&#34;
+4, False, &#34;a2&#34;
+6, False, &#34;d2&#34;
+</code></pre><p>When the database is queried, we first look into table 2, and then table 1. This ensures the database always returns the most up to date information. A downside of this approach is that if a key is queried that is not in the database, all tables will have to be searched. It also introduces data duplication. In order to mitigate this tables are compacted in the background over time. For example, the two tables above could be compacted into the following single table:</p>
+<p>Table 3:</p>
+<pre tabindex="0"><code>Key, Deleted, Value
+
+1, False, &#34;a&#34;
+3, False, &#34;c&#34;
+4, False, &#34;a2&#34;
+6, False, &#34;2&#34;
+</code></pre><p>SSTables enable quick writes, as the database only ever has to append to a file, which is muck quicker than writing to a file in random location.</p>
+<h2 id="designing-the-database">Designing the database</h2>
+<p>The database will consist of the following parts:</p>
+<ul>
+<li>
+<p>A memory table that is used to store recent operations on the database</p>
+</li>
+<li>
+<p>A WAL (Write Ahead Log) to guarantee persistence of the memory table in case the computer shuts down</p>
+</li>
+<li>
+<p>SSTables that store ordered rows.</p>
+</li>
+</ul>
+<p>When a user inserts a new record, the actions is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has a reached a certain size (2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created.</p>
+<p>Each table in the database is given a separate directory with sstables, but all database commands are stored in the same memtable and WAL.</p>
+<h3 id="inserting">Inserting</h3>
+<p>If a user inserts a record, we write the insertion to the WAL and insert the row in the memtable in its appropriate ordered location.</p>
+<h3 id="updating">Updating</h3>
+<p>If a user updates a record, we update the data in the memtable, but if the record is not in there (because it&rsquo;s been flushed to disk) it is simply added to the memtable as if it is an insertion.</p>
+<h3 id="reading">Reading</h3>
+<p>When a user queries a specific primary key, the database engine searches the memtable. If it isn&rsquo;t there it then starts to search the most recent SSTable and all following SSTables until it finds it. This means that if the key is not in the database the process has to search everything. This part can be sped up by an indexing strategy.</p>
+<h3 id="deleting">Deleting</h3>
+<p>Like updating we we update the record by setting a deleted flag to true</p>
+<h2 id="a-first-implementation">A first implementation</h2>
+<p>I&rsquo;ve decided to implement the database in Golang as I&rsquo;m familiar with it and it&rsquo;s simple to write.</p>
+<h3 id="memtables">Memtables</h3>
+<p>Let&rsquo;s start by implementing the memtable component. We need the memtable to be able to support different types of tables later on, so let&rsquo;s design it with that in mind.</p>
+<p>We&rsquo;ll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. Depending on the table structure, the primary key might be a a string, int or bool. The values can also be any type. In order to support this the primary key and values with be stored as byte arrays. The database can then look into the table structure to determine how to interpret the values.</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Memtable</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entries</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">list</span>.<span style="color:#a6e22e">List</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">MemtableEntry</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">id</span>      []<span style="color:#66d9ef">byte</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">values</span>  [][]<span style="color:#66d9ef">byte</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">deleted</span> <span style="color:#66d9ef">bool</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>The memtable has functions for insert / update / get</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">m</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>) <span style="color:#a6e22e">Get</span>(<span style="color:#a6e22e">id</span> []<span style="color:#66d9ef">byte</span>) <span style="color:#f92672">*</span><span style="color:#a6e22e">MemtableEntry</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">next</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>()
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">next</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Equal</span>(<span style="color:#a6e22e">id</span>, <span style="color:#a6e22e">next</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>).<span style="color:#a6e22e">id</span>) {
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">next</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>)
+</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">entry</span>
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">m</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>) <span style="color:#a6e22e">Update</span>(<span style="color:#a6e22e">id</span> []<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">values</span> [][]<span style="color:#66d9ef">byte</span>) {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">MemtableEntry</span>{
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">id</span>:      <span style="color:#a6e22e">id</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">values</span>:  <span style="color:#a6e22e">values</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">deleted</span>: <span style="color:#66d9ef">false</span>,
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Equal</span>(<span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>).<span style="color:#a6e22e">id</span>, <span style="color:#a6e22e">id</span>) {
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Value</span> = <span style="color:#a6e22e">entry</span>
+</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span>
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">m</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>) <span style="color:#a6e22e">Insert</span>(<span style="color:#a6e22e">id</span> []<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">values</span> [][]<span style="color:#66d9ef">byte</span>) {
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">MemtableEntry</span>{
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">id</span>:      <span style="color:#a6e22e">id</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">values</span>:  <span style="color:#a6e22e">values</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">deleted</span>: <span style="color:#66d9ef">false</span>,
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">next</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>()
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">next</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Compare</span>(<span style="color:#a6e22e">id</span>, <span style="color:#a6e22e">next</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>).<span style="color:#a6e22e">id</span>) <span style="color:#f92672">==</span> <span style="color:#f92672">-</span><span style="color:#ae81ff">1</span> {
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">InsertBefore</span>(<span style="color:#a6e22e">entry</span>, <span style="color:#a6e22e">next</span>)
+</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span>
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">PushBack</span>(<span style="color:#a6e22e">entry</span>)
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>SSTables</p>
+<p>When the memtable is full, we want to store it to disk. This is where the SSTable comes in.</p>
+
+</article>
+
+            </div>
+        </main>
+    </body></html>
