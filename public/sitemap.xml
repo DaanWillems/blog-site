@@ -11,18 +11,8 @@
     <loc>http://localhost:1313/posts/</loc>
     <lastmod>2025-04-24T00:00:00+00:00</lastmod>
   </url><url>
-    <loc>http://localhost:1313/tags/physics2d/</loc>
-    <lastmod>2024-02-01T00:00:00+00:00</lastmod>
-  </url><url>
-    <loc>http://localhost:1313/rigid-bodies/</loc>
-    <lastmod>2024-02-01T00:00:00+00:00</lastmod>
-  </url><url>
-    <loc>http://localhost:1313/tags/rust/</loc>
-    <lastmod>2024-02-01T00:00:00+00:00</lastmod>
+    <loc>http://localhost:1313/categories/</loc>
   </url><url>
     <loc>http://localhost:1313/tags/</loc>
-    <lastmod>2024-02-01T00:00:00+00:00</lastmod>
-  </url><url>
-    <loc>http://localhost:1313/categories/</loc>
   </url>
 </urlset>
