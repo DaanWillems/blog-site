@@ -69,7 +69,7 @@
         </aside>
     
 
-    <p>In almost every project I ever built, a database was a central component. Often I&rsquo;d read online about what specific database engines excelled in, and what they lacked. However, I never fully understood what this meant exactly. That always irritated me. I think in cases like this, the best way to learn more about a topic is to try build something myself. So I set out with very little knowledge but a lot of optimism to try to build my own database engine.</p>
+    <p>In almost every project I ever built, a database was a central component. Often I&rsquo;d read online about what specific database engines excelled in, and what they lacked. However, I never fully understood what this meant exactly. That always irritated me. I think in cases like this, the best way to learn more about a topic is to try to build something myself. So I set out with very little knowledge but a lot of optimism to try to build my own database engine.</p>
 <p>This post is the first part of building a simple database engine from scratch. It covers:</p>
 <ul>
 <li>Requirements for a simple database</li>
@@ -81,14 +81,14 @@
 <h2 id="requirements">Requirements</h2>
 <p>Before starting with anything, it is important to determine the database requirements. Clear requirements can direct the design while also preventing unnecessary work.</p>
 <ul>
-<li>Data written must be persistent (not lost on system restarts)</li>
-<li>The database must be crash resistant</li>
-<li>There should be some sort of schema to define what the data looks like</li>
+<li>Data written must be persistent (not lost on system restarts).</li>
+<li>The database must be crash resistant (Data must never be lost if the database reports that it&rsquo;s inserted, even if the system crashes during a write).</li>
+<li>There should be a basic schema mechanism to define the structure of the data.</li>
 <li>It must support: strings, integers and booleans.</li>
-<li>It must support: Defining a primary key</li>
-<li>There should be a way of interfacing with the database (inserting, reading, updating and deleting data)</li>
-<li>There should be a primary index to speed up finding data</li>
-<li>The database should be optimized for quick writes</li>
+<li>It must support: Defining a primary key.</li>
+<li>There should be a way of interfacing with the database (inserting, reading, updating and deleting data).</li>
+<li>There should be a primary index to speed up finding data.</li>
+<li>The database should be optimized for quick writes.</li>
 </ul>
 <p>Out of scope:</p>
 <ul>
@@ -99,9 +99,9 @@
 <h2 id="storing-data-on-disk">Storing data on disk</h2>
 <p>A core part of a database is being able to store data persistently (on disk) and being able to search it. In this section</p>
 <h3 id="sstables-and-b-trees">SSTables and B-Trees</h3>
-<p>There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, is it complicated to store a B-Tree on disk. SSTables excel at writing quickly, but are less optmized for reading. SSTables are used to power popular databases like CassandraDB and Lucene (Elasticsearch). B-Tree&rsquo;s are often used in relational databases where reading is very important, like PostgresQL and MySQL. For this project we will use SStables.</p>
+<p>There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, is it inefficient to update a B-Tree stored on disk. SSTables excel at writing quickly, but are less optimized for reading. However, read speeds can be improved by optimization techniques like bloom filters and indexes. SSTables are used to power popular databases like CassandraDB and Lucene (Elasticsearch). B-Tree&rsquo;s are often used in relational databases where reading is very important, like PostgresQL and MySQL. For this project we will use SSTables.</p>
 <h3 id="sstables">SSTables</h3>
-<p>SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SStable. Altered records can be added to a new SStable, deleted records are also added, and tombstoned (marked as deleted).</p>
+<p>SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).</p>
 <p>Imagine a key value table written stored on disk. It includes a delete</p>
 <p>Table 1:</p>
 <pre tabindex="0"><code>Key, Deleted, Value
@@ -155,7 +155,7 @@
 <p>SSTables that store ordered rows.</p>
 </li>
 </ul>
-<p>When a user inserts a new record, the actions is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created.</p>
+<p>When a user inserts a new record, the action is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (e.g: 2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created.</p>
 <p><img src="/images/db_design.png" alt="Image displaying database design"></p>
 <p>Each table in the database is given a separate directory with sstables, but all database commands are stored in the same memtable and WAL. The table structures (or schema) can be stored in its own table.</p>
 <h3 id="inserting-data">Inserting data</h3>
@@ -182,10 +182,9 @@
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><p>The memtable has functions for insert / update / get</p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">m</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>) <span style="color:#a6e22e">Get</span>(<span style="color:#a6e22e">id</span> []<span style="color:#66d9ef">byte</span>) <span style="color:#f92672">*</span><span style="color:#a6e22e">MemtableEntry</span> {
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">next</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>()
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">next</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> <span style="color:#f92672">&amp;&amp;</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Equal</span>(<span style="color:#a6e22e">id</span>, <span style="color:#a6e22e">next</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>).<span style="color:#a6e22e">id</span>) {
-</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">next</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">m</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Equal</span>(<span style="color:#a6e22e">id</span>, <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>).<span style="color:#a6e22e">id</span>) {
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>)
 </span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">entry</span>
 </span></span><span style="display:flex;"><span>		}
 </span></span><span style="display:flex;"><span>	}
@@ -317,7 +316,7 @@
 </span></span></code></pre></div><h3 id="creating-the-sstable">Creating the SSTable</h3>
 <p>When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before.</p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">CreateSSTableFromMetable</span>(<span style="color:#a6e22e">memtable</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>, <span style="color:#a6e22e">blockSize</span> <span style="color:#66d9ef">int</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">SSTable</span>, <span style="color:#66d9ef">error</span>) {
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">currentBlock</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">currentBlock</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">blocks</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
@@ -331,9 +330,8 @@
 </span></span><span style="display:flex;"><span>				<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">SSTable</span>{}, <span style="color:#a6e22e">errors</span>.<span style="color:#a6e22e">New</span>(<span style="color:#e6db74">&#34;Entry larger than max block size&#34;</span>)
 </span></span><span style="display:flex;"><span>			}
 </span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Pad remainder of block</span>
-</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">for</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>) {
-</span></span><span style="display:flex;"><span>				<span style="color:#a6e22e">currentBlock</span> = append(<span style="color:#a6e22e">currentBlock</span>, byte(<span style="color:#ae81ff">0</span>))
-</span></span><span style="display:flex;"><span>			}
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">padding</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">currentBlock</span> = append(<span style="color:#a6e22e">currentBlock</span>, make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">padding</span>)<span style="color:#f92672">...</span>)
 </span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Prepare new block</span>
 </span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">blocks</span> = append(<span style="color:#a6e22e">blocks</span>, <span style="color:#a6e22e">currentBlock</span><span style="color:#f92672">...</span>)
 </span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">currentBlock</span> = []<span style="color:#66d9ef">byte</span>{}

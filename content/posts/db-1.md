@@ -11,7 +11,7 @@ tags: []
 showTags: false
 ---
 
-In almost every project I ever built, a database was a central component. Often I'd read online about what specific database engines excelled in, and what they lacked. However, I never fully understood what this meant exactly. That always irritated me. I think in cases like this, the best way to learn more about a topic is to try build something myself. So I set out with very little knowledge but a lot of optimism to try to build my own database engine. 
+In almost every project I ever built, a database was a central component. Often I'd read online about what specific database engines excelled in, and what they lacked. However, I never fully understood what this meant exactly. That always irritated me. I think in cases like this, the best way to learn more about a topic is to try to build something myself. So I set out with very little knowledge but a lot of optimism to try to build my own database engine. 
 
 This post is the first part of building a simple database engine from scratch. It covers:
 - Requirements for a simple database
@@ -25,14 +25,14 @@ In follow up posts I will try and optimize the database and also expand upon its
 
 Before starting with anything, it is important to determine the database requirements. Clear requirements can direct the design while also preventing unnecessary work. 
 
-- Data written must be persistent (not lost on system restarts)
-- The database must be crash resistant
-- There should be some sort of schema to define what the data looks like
+- Data written must be persistent (not lost on system restarts).
+- The database must be crash resistant (Data must never be lost if the database reports that it's inserted, even if the system crashes during a write).
+- There should be a basic schema mechanism to define the structure of the data.
 - It must support: strings, integers and booleans. 
-- It must support: Defining a primary key
-- There should be a way of interfacing with the database (inserting, reading, updating and deleting data)
-- There should be a primary index to speed up finding data
-- The database should be optimized for quick writes
+- It must support: Defining a primary key.
+- There should be a way of interfacing with the database (inserting, reading, updating and deleting data).
+- There should be a primary index to speed up finding data.
+- The database should be optimized for quick writes.
 
 Out of scope:
 
@@ -46,10 +46,10 @@ A core part of a database is being able to store data persistently (on disk) and
 
 ### SSTables and B-Trees
 
-There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, is it complicated to store a B-Tree on disk. SSTables excel at writing quickly, but are less optmized for reading. SSTables are used to power popular databases like CassandraDB and Lucene (Elasticsearch). B-Tree's are often used in relational databases where reading is very important, like PostgresQL and MySQL. For this project we will use SStables.
+There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, is it inefficient to update a B-Tree stored on disk. SSTables excel at writing quickly, but are less optimized for reading. However, read speeds can be improved by optimization techniques like bloom filters and indexes. SSTables are used to power popular databases like CassandraDB and Lucene (Elasticsearch). B-Tree's are often used in relational databases where reading is very important, like PostgresQL and MySQL. For this project we will use SSTables.
 
 ### SSTables
-SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SStable. Altered records can be added to a new SStable, deleted records are also added, and tombstoned (marked as deleted).
+SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).
 
 Imagine a key value table written stored on disk. It includes a delete 
 
@@ -124,7 +124,7 @@ The database will consist of the following parts:
 
 - SSTables that store ordered rows.
 
-When a user inserts a new record, the actions is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created. 
+When a user inserts a new record, the action is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (e.g: 2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created. 
 
 ![Image displaying database design](/images/db_design.png)
 
@@ -172,10 +172,9 @@ The memtable has functions for insert / update / get
 
 ```go
 func (m *Memtable) Get(id []byte) *MemtableEntry {
-	for e := m.entries.Front(); e != nil; e = e.Next() {
-		next := e.Next()
-		if next != nil && bytes.Equal(id, next.Value.(MemtableEntry).id) {
-			entry := next.Value.(MemtableEntry)
+    for e := m.entries.Front(); e != nil; e = e.Next() {
+		if bytes.Equal(id, e.Value.(MemtableEntry).id) {
+			entry := e.Value.(MemtableEntry)
 			return &entry
 		}
 	}
@@ -324,7 +323,7 @@ When the memtable is full, we want to store it to disk. This is where the SSTabl
 
 ```go
 func CreateSSTableFromMetable(memtable *Memtable, blockSize int) (*SSTable, error) {
-	currentBlock := []byte{}
+    currentBlock := []byte{}
 	blocks := []byte{}
 
 	for e := memtable.entries.Front(); e != nil; e = e.Next() {
@@ -338,9 +337,8 @@ func CreateSSTableFromMetable(memtable *Memtable, blockSize int) (*SSTable, erro
 				return &SSTable{}, errors.New("Entry larger than max block size")
 			}
 			//Pad remainder of block
-			for range blockSize - len(currentBlock) {
-				currentBlock = append(currentBlock, byte(0))
-			}
+			padding := blockSize - len(currentBlock)
+			currentBlock = append(currentBlock, make([]byte, padding)...)
 			//Prepare new block
 			blocks = append(blocks, currentBlock...)
 			currentBlock = []byte{}
