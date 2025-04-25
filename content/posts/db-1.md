@@ -40,15 +40,13 @@ Out of scope:
 - No secondary indexes (Indexes on fields other than the primary key)
 - Ability to update existing table structures
 
-## Storing data on disk
+## Writing data to disk
 
-A core part of a database is being able to store data persistently (on disk) and being able to search it. In this section 
-
-### SSTables and B-Trees
+A core part of a database is being able to store data persistently (on disk) and being able to search it. 
 
 There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, is it inefficient to update a B-Tree stored on disk. SSTables excel at writing quickly, but are less optimized for reading. However, read speeds can be improved by optimization techniques like bloom filters and indexes. SSTables are used to power popular databases like CassandraDB and Lucene (Elasticsearch). B-Tree's are often used in relational databases where reading is very important, like PostgresQL and MySQL. For this project we will use SSTables.
 
-### SSTables
+### SSTables in practice
 SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).
 
 Imagine a key value table written stored on disk. It includes a delete 
@@ -114,8 +112,8 @@ We add another entry of 6 bytes. As the remaining size in the block is: 10-6=4, 
 Todo: make image
 
 In a later part, we can use the predictable block structure to build an index that contains information about what keys are in which block. This will will greatly increase search speed. 
-
-## Designing the database
+ 
+## Database design
 The database will consist of the following parts:
 
 - A memory table that is used to store recent operations on the database
@@ -150,7 +148,7 @@ Like updating we update the record by setting a deleted flag to true
 
 Let's start implementing some of the basic building blocks of the database. I have decided to use Golang as I'm familiar with it and it's simple to write. 
 
-### Memtables
+### Memory table 
 
 First we implement the memtable component. We need the memtable to be able to support different types of tables later on, so let's design it with that in mind.
 
@@ -217,10 +215,10 @@ func (m *Memtable) Insert(id []byte, values [][]byte) {
 }
 ```
 
-### Serializing entries
+### Serializing the data
 In order to store the data on disk and in the WAL the data needs to be serialized. We'll convert an entry into a byte array with the following format:
 
-
+TODO: Add image
 size, id_size, id_value, deleted, value_count, value_1_size, value_1. value_2_size, value_2... 
 
 ```go
@@ -363,7 +361,7 @@ func (table *SSTable) Flush(path string) error {
 ```
 
 ### Searching in the SSTable
-We can now do a very simple lookup in the table. This implementation is just to try it out,later we'll replace this with a faster solution.
+We can now do a very simple lookup in the table. This implementation is just to try it out, later we'll replace this with a faster solution.
 
 ```go
 
