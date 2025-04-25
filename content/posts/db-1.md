@@ -126,23 +126,23 @@ The database will consist of the following parts:
 
 When a user inserts a new record, the actions is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created. 
 
-
+![Image displaying database design](/images/db_design.png)
 
 Each table in the database is given a separate directory with sstables, but all database commands are stored in the same memtable and WAL. The table structures (or schema) can be stored in its own table.
 
-### Inserting
+### Inserting data
 
 If a user inserts a record, we write the insertion to the WAL and insert the row in the memtable in its appropriate ordered location.
 
-### Updating
+### Updating data
 
 If a user updates a record, we update the data in the memtable, but if the record is not in there (because it's been flushed to disk) it is simply added to the memtable as if it is an insertion.
 
-### Reading
+### Reading data
 
 When a user queries a specific primary key, the database engine searches the memtable. If it isn't there it then starts to search the most recent SSTable and all following SSTables until it finds it. This means that if the key is not in the database the process has to search everything. This part can be sped up by an indexing strategy. 
 
-### Deleting
+### Deleting data
 
 Like updating we update the record by setting a deleted flag to true
 

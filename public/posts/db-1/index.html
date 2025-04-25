@@ -50,10 +50,10 @@
     </li>
     <li><a href="#designing-the-database">Designing the database</a>
       <ul>
-        <li><a href="#inserting">Inserting</a></li>
-        <li><a href="#updating">Updating</a></li>
-        <li><a href="#reading">Reading</a></li>
-        <li><a href="#deleting">Deleting</a></li>
+        <li><a href="#inserting-data">Inserting data</a></li>
+        <li><a href="#updating-data">Updating data</a></li>
+        <li><a href="#reading-data">Reading data</a></li>
+        <li><a href="#deleting-data">Deleting data</a></li>
       </ul>
     </li>
     <li><a href="#a-first-implementation">A first implementation</a>
@@ -154,14 +154,15 @@
 </li>
 </ul>
 <p>When a user inserts a new record, the actions is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created.</p>
+<p><img src="/images/db_design.png" alt="Image displaying database design"></p>
 <p>Each table in the database is given a separate directory with sstables, but all database commands are stored in the same memtable and WAL. The table structures (or schema) can be stored in its own table.</p>
-<h3 id="inserting">Inserting</h3>
+<h3 id="inserting-data">Inserting data</h3>
 <p>If a user inserts a record, we write the insertion to the WAL and insert the row in the memtable in its appropriate ordered location.</p>
-<h3 id="updating">Updating</h3>
+<h3 id="updating-data">Updating data</h3>
 <p>If a user updates a record, we update the data in the memtable, but if the record is not in there (because it&rsquo;s been flushed to disk) it is simply added to the memtable as if it is an insertion.</p>
-<h3 id="reading">Reading</h3>
+<h3 id="reading-data">Reading data</h3>
 <p>When a user queries a specific primary key, the database engine searches the memtable. If it isn&rsquo;t there it then starts to search the most recent SSTable and all following SSTables until it finds it. This means that if the key is not in the database the process has to search everything. This part can be sped up by an indexing strategy.</p>
-<h3 id="deleting">Deleting</h3>
+<h3 id="deleting-data">Deleting data</h3>
 <p>Like updating we update the record by setting a deleted flag to true</p>
 <h2 id="a-first-implementation">A first implementation</h2>
 <p>Let&rsquo;s start implementing some of the basic building blocks of the database. I have decided to use Golang as I&rsquo;m familiar with it and it&rsquo;s simple to write.</p>
