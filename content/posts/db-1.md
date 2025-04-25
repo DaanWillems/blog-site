@@ -53,7 +53,7 @@ Imagine a key value table written stored on disk. It includes a delete
 
 Table 1:
 
-```
+```json
 Key, Deleted, Value
 
 1, False, "a"
@@ -66,7 +66,7 @@ At this point the user adds the record (4, 'a2'), removed the record with id 2 a
 
 Table 2:
 
-```
+```json
 Key, Deleted, Value
 
 2, True,  "b"
@@ -81,7 +81,7 @@ With the SSTables method of storing data, a lot of potential duplication is intr
 
 Table 3: 
 
-```
+```json
 Key, Deleted, Value
 
 1, False, "a"
@@ -128,19 +128,19 @@ When a user inserts a new record, the action is written to the WAL and inserted 
 
 Each table in the database is given a separate directory with sstables, but all database commands are stored in the same memtable and WAL. The table structures (or schema) can be stored in its own table.
 
-### Inserting data
+**Inserting data**
 
 If a user inserts a record, we write the insertion to the WAL and insert the row in the memtable in its appropriate ordered location.
 
-### Updating data
+**Updating data**
 
 If a user updates a record, we update the data in the memtable, but if the record is not in there (because it's been flushed to disk) it is simply added to the memtable as if it is an insertion.
 
-### Reading data
+**Reading data**
 
 When a user queries a specific primary key, the database engine searches the memtable. If it isn't there it then starts to search the most recent SSTable and all following SSTables until it finds it. This means that if the key is not in the database the process has to search everything. This part can be sped up by an indexing strategy. 
 
-### Deleting data
+**Deleting data**
 
 Like updating we update the record by setting a deleted flag to true
 

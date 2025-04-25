@@ -47,14 +47,7 @@
         <li><a href="#blocks">Blocks</a></li>
       </ul>
     </li>
-    <li><a href="#database-design">Database design</a>
-      <ul>
-        <li><a href="#inserting-data">Inserting data</a></li>
-        <li><a href="#updating-data">Updating data</a></li>
-        <li><a href="#reading-data">Reading data</a></li>
-        <li><a href="#deleting-data">Deleting data</a></li>
-      </ul>
-    </li>
+    <li><a href="#database-design">Database design</a></li>
     <li><a href="#a-first-implementation">A first implementation</a>
       <ul>
         <li><a href="#memory-table">Memory table</a></li>
@@ -102,30 +95,30 @@
 <p>SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).</p>
 <p>Imagine a key value table written stored on disk. It includes a delete</p>
 <p>Table 1:</p>
-<pre tabindex="0"><code>Key, Deleted, Value
-
-1, False, &#34;a&#34;
-2, False, &#34;b&#34;
-3, False, &#34;c&#34;
-6, False, &#34;d&#34;
-</code></pre><p>At this point the user adds the record (4, &lsquo;a2&rsquo;), removed the record with id 2 and update the record 6 to value &lsquo;d2&rsquo;. These changes are written to a new table on disk:</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-json" data-lang="json"><span style="display:flex;"><span><span style="color:#960050;background-color:#1e0010">Key,</span> <span style="color:#960050;background-color:#1e0010">Deleted,</span> <span style="color:#960050;background-color:#1e0010">Value</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">1</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;a&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">2</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;b&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">3</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;c&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">6</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;d&#34;</span>
+</span></span></code></pre></div><p>At this point the user adds the record (4, &lsquo;a2&rsquo;), removed the record with id 2 and update the record 6 to value &lsquo;d2&rsquo;. These changes are written to a new table on disk:</p>
 <p>Table 2:</p>
-<pre tabindex="0"><code>Key, Deleted, Value
-
-2, True,  &#34;b&#34;
-4, False, &#34;a2&#34;
-6, False, &#34;d2&#34;
-</code></pre><p>When the database is queried, we first look into table 2, and then table 1. This ensures the database always returns the most up to date information. A downside of this approach is that if a key is queried that is not in the database, all tables will have to be searched.</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-json" data-lang="json"><span style="display:flex;"><span><span style="color:#960050;background-color:#1e0010">Key,</span> <span style="color:#960050;background-color:#1e0010">Deleted,</span> <span style="color:#960050;background-color:#1e0010">Value</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">2</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">True,</span>  <span style="color:#e6db74">&#34;b&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">4</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;a2&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">6</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;d2&#34;</span>
+</span></span></code></pre></div><p>When the database is queried, we first look into table 2, and then table 1. This ensures the database always returns the most up to date information. A downside of this approach is that if a key is queried that is not in the database, all tables will have to be searched.</p>
 <h3 id="compaction">Compaction</h3>
 <p>With the SSTables method of storing data, a lot of potential duplication is introduced. In order to mitigate this, tables are compacted in the background over time. For example, the two tables above could be compacted into the following single table:</p>
 <p>Table 3:</p>
-<pre tabindex="0"><code>Key, Deleted, Value
-
-1, False, &#34;a&#34;
-3, False, &#34;c&#34;
-4, False, &#34;a2&#34;
-6, False, &#34;2&#34;
-</code></pre><p>By using a merge sort, it is efficient to merge 2 sorted lists into 1 sorted list.</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-json" data-lang="json"><span style="display:flex;"><span><span style="color:#960050;background-color:#1e0010">Key,</span> <span style="color:#960050;background-color:#1e0010">Deleted,</span> <span style="color:#960050;background-color:#1e0010">Value</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">1</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;a&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">3</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;c&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">4</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;a2&#34;</span>
+</span></span><span style="display:flex;"><span><span style="color:#ae81ff">6</span><span style="color:#960050;background-color:#1e0010">,</span> <span style="color:#960050;background-color:#1e0010">False,</span> <span style="color:#e6db74">&#34;2&#34;</span>
+</span></span></code></pre></div><p>By using a merge sort, it is efficient to merge 2 sorted lists into 1 sorted list.</p>
 <p>SSTables enable quick writes, as the database only ever has to append to a file, which is much quicker than writing to a file in random location.</p>
 <h3 id="blocks">Blocks</h3>
 <p>It&rsquo;s impossible to predict the length of an entry, it depends on what the user is storing. This means that if multiple entries are written to a SSTable, we cannot know where entries start and end without scanning the file from the beginning. To address this, SSTables are typically structured into blocks of fixed size. This opens the door for many possible search optimizations. Let&rsquo;s investigate how these blocks are structured.</p>
@@ -156,13 +149,13 @@
 <p>When a user inserts a new record, the action is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (e.g: 2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created.</p>
 <p><img src="/images/db_design.png" alt="Image displaying database design"></p>
 <p>Each table in the database is given a separate directory with sstables, but all database commands are stored in the same memtable and WAL. The table structures (or schema) can be stored in its own table.</p>
-<h3 id="inserting-data">Inserting data</h3>
+<p><strong>Inserting data</strong></p>
 <p>If a user inserts a record, we write the insertion to the WAL and insert the row in the memtable in its appropriate ordered location.</p>
-<h3 id="updating-data">Updating data</h3>
+<p><strong>Updating data</strong></p>
 <p>If a user updates a record, we update the data in the memtable, but if the record is not in there (because it&rsquo;s been flushed to disk) it is simply added to the memtable as if it is an insertion.</p>
-<h3 id="reading-data">Reading data</h3>
+<p><strong>Reading data</strong></p>
 <p>When a user queries a specific primary key, the database engine searches the memtable. If it isn&rsquo;t there it then starts to search the most recent SSTable and all following SSTables until it finds it. This means that if the key is not in the database the process has to search everything. This part can be sped up by an indexing strategy.</p>
-<h3 id="deleting-data">Deleting data</h3>
+<p><strong>Deleting data</strong></p>
 <p>Like updating we update the record by setting a deleted flag to true</p>
 <h2 id="a-first-implementation">A first implementation</h2>
 <p>Let&rsquo;s start implementing some of the basic building blocks of the database. I have decided to use Golang as I&rsquo;m familiar with it and it&rsquo;s simple to write.</p>
