@@ -1,5 +1,5 @@
 ---
-title: "Building a database: Getting Started"
+title: "Building a database: Part 1"
 date: "2025-04-24"
 summary: "Small summary"
 toc: true
@@ -44,16 +44,16 @@ Out of scope:
 
 A core part of a database is being able to store data persistently (on disk) and being able to search it. 
 
-There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, is it inefficient to update a B-Tree stored on disk. SSTables excel at writing quickly, but are less optimized for reading. However, read speeds can be improved by optimization techniques like bloom filters and indexes. SSTables are used to power popular databases like CassandraDB and Lucene (Elasticsearch). B-Tree's are often used in relational databases where reading is very important, like PostgresQL and MySQL. For this project we will use SSTables.
+There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, it is inefficient to update a B-Tree stored on disk. SSTables excel at writing quickly, but are less optimized for reading. However, read speeds can be improved by optimization techniques like bloom filters and indexes. SSTables are used to power popular databases like CassandraDB. B-Tree's are often used in relational databases where reading is very important, like PostgreSQL and MySQL. For this project we will use SSTables.
 
 ### SSTables in practice
-SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable,and cannot be updated. This means mutations on existed records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).
+SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable, and cannot be updated. This means mutations on existing records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).
 
-Imagine a key value table written stored on disk. It includes a delete 
+Imagine a key value table written and stored on disk. 
 
 Table 1:
 
-```json
+```
 Key, Deleted, Value
 
 1, False, "a"
@@ -66,7 +66,7 @@ At this point the user adds the record (4, 'a2'), removed the record with id 2 a
 
 Table 2:
 
-```json
+```
 Key, Deleted, Value
 
 2, True,  "b"
@@ -81,52 +81,56 @@ With the SSTables method of storing data, a lot of potential duplication is intr
 
 Table 3: 
 
-```json
+```
 Key, Deleted, Value
 
 1, False, "a"
 3, False, "c"
 4, False, "a2"
-6, False, "2"
+6, False, "d2"
 ```
 
 By using a merge sort, it is efficient to merge 2 sorted lists into 1 sorted list.
 
-SSTables enable quick writes, as the database only ever has to append to a file, which is much quicker than writing to a file in random location.
+SSTables enable quick writes, as the database only ever has to append to a file, which is much quicker than writing to a file in a random location.
 
 ### Blocks
 It's impossible to predict the length of an entry, it depends on what the user is storing. This means that if multiple entries are written to a SSTable, we cannot know where entries start and end without scanning the file from the beginning. To address this, SSTables are typically structured into blocks of fixed size. This opens the door for many possible search optimizations. Let's investigate how these blocks are structured. 
 
-First we determine a static size for each block, usually that will be something like 2MB. We adhere to the following rules when writing to block:
+First we determine a static size for each block, typically around 2KB. We adhere to the following rules when writing to block:
 
 - Each block always starts with a new entry to ensure entries are never split across block boundaries.
-- If an entry cannot be added to a block without exceeding the remaining space in the block, the entry is added to a new block. The current block is padded with 0 bytes. Padding is important because we want blocks of fixed size, but also wastes some space on disk.
-- To keep things simple: if an entry is larger than the block size, it will never fit. The database will throw an error. 
+- If an entry cannot be added to a block without exceeding the remaining space in the block, the entry is added to a new block. The current block is padded with empty bytes. Padding is important because we want blocks of fixed size, but also wastes some space on disk.
+- To keep things simple if an entry is larger than the block size, it will never fit. The database will throw an error. 
 
-Let's say we have an entry that is 6 bytes long. It's added to the first block:
+The image below shows a possible block layout on disk with a 10 byte block size. The first 2 entries are placed in the first block, which leaves 2 bytes left. The next entry is 6 bytes and does not fit. The current block is padded with 2 bytes (marked in blue), and the new entry is added to the next block. 
 
-Todo: make image
-
-We add another entry of 6 bytes. As the remaining size in the block is: 10-6=4, the entry is added to a new block.
-
-Todo: make image
+![Image displaying multiple blocks](/images/block2.png)
 
 In a later part, we can use the predictable block structure to build an index that contains information about what keys are in which block. This will will greatly increase search speed. 
  
 ## Database design
-The database will consist of the following parts:
+Alright, the SSTable provides a structure for storing data on disk optimized for insertion. However to have a working database, we need a few more components. In this section we cover the high level database design:
 
-- A memory table that is used to store recent operations on the database
+- A memory table that stores recent operations on the database
 
 - A WAL (Write Ahead Log) to guarantee persistence of the memory table in case the computer shuts down
 
 - SSTables that store ordered rows.
 
-When a user inserts a new record, the action is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. As more data is inserted over time, the memtable grows. When it has reached a certain size (e.g: 2MB). The table is written to a SSTable on disk. When the SSTable has reached some predefined size, it is closed and a new SSTable can be created. 
+When a user inserts a new record, the action is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. If the process crashes, all data in the memtable is lost. After restarting, the database process can replay the WAL to restore the memtable. 
+
+As more data is inserted over time, the memtable grows. When it has reached a certain size (e.g: 2MB). The table is written to a SSTable on disk. Over time the SSTables are compacted in the background.
 
 ![Image displaying database design](/images/db_design.png)
 
-Each table in the database is given a separate directory with sstables, but all database commands are stored in the same memtable and WAL. The table structures (or schema) can be stored in its own table.
+### Structuring files and tables
+
+Each table in the database is given a separate directory with SSTables. The database also maintains a separate memtable per table. The WAL however is unified and contains the operations on all tables. 
+
+Of course the database needs to keep track of what tables exist. When the database is initialized, it will create a 'book keeping' table to store this information.
+
+### Database operations
 
 **Inserting data**
 
@@ -146,13 +150,13 @@ Like updating we update the record by setting a deleted flag to true
 
 ## A first implementation
 
-Let's start implementing some of the basic building blocks of the database. I have decided to use Golang as I'm familiar with it and it's simple to write. 
+Let's start implementing some of the basic building blocks of the database. I have decided to use Golang as I'm familiar with it and it's easy to read. 
 
 ### Memory table 
 
-First we implement the memtable component. We need the memtable to be able to support different types of tables later on, so let's design it with that in mind.
+First we implement the memtable component. We need the memtable to be able to support different types of table structures later on, so let's design it with that in mind.
 
-We'll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. Depending on the table structure, the primary key might be a a string, int or bool. The values can also be any type. In order to support this the primary key and values with be stored as byte arrays. The database can then look into the table structure to determine how to interpret the values. In order to maintain an 
+We'll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. Depending on the table structure, the primary key might be a a string, int or bool. The values can also be any type. In order to support this the primary key and values with be stored as byte arrays. When reading the data, the database can lookup the table structure to determine how to interpret the byte values. 
 
 ```go
 type Memtable struct {
@@ -218,8 +222,7 @@ func (m *Memtable) Insert(id []byte, values [][]byte) {
 ### Serializing the data
 In order to store the data on disk and in the WAL the data needs to be serialized. We'll convert an entry into a byte array with the following format:
 
-TODO: Add image
-size, id_size, id_value, deleted, value_count, value_1_size, value_1. value_2_size, value_2... 
+![Image displaying entry layout on disk](/images/entry_layout.png)
 
 ```go
 func (entry *MemtableEntry) Serialize() (int, []byte) {
@@ -258,7 +261,7 @@ func (entry *MemtableEntry) Deserialize(bytes []byte) {
 
 	index++ // We can skip the total content length
 
-  deleted_i := int(bytes[index])
+    deleted_i := int(bytes[index])
 	entry.deleted = false
 	if deleted_i == 1 {
    entry.deleted = true
@@ -344,11 +347,8 @@ func CreateSSTableFromMetable(memtable *Memtable, blockSize int) (*SSTable, erro
 
 		currentBlock = append(currentBlock, serialized_entry...)
 	}
-
-	//Pad remainder of block
-	for range blockSize - len(currentBlock) {
-		currentBlock = append(currentBlock, byte(0))
-	}
+    padding := blockSize - len(currentBlock)
+    currentBlock = append(currentBlock, make([]byte, padding)...)
 
 	blocks = append(blocks, currentBlock...)
 
@@ -363,6 +363,7 @@ func (table *SSTable) Flush(path string) error {
 ### Searching in the SSTable
 We can now do a very simple lookup in the table. This implementation is just to try it out, later we'll replace this with a faster solution.
 
+To prevent having to load the entire file in from memory we use the bufio package. 
 ```go
 
 func SearchInSSTable(path string, searchId []byte) (MemtableEntry, error) {
@@ -390,7 +391,14 @@ func SearchInSSTable(path string, searchId []byte) (MemtableEntry, error) {
 		contentLength := make([]byte, 1)
 
 		_, err = reader.Read(id)
+		if err != nil {
+			return MemtableEntry{}, err
+		}
+
 		_, err = reader.Read(contentLength)
+		if err != nil {
+			return MemtableEntry{}, err
+		}
 
 		if !bytes.Equal(id, searchId) {
 			reader.Discard(int(contentLength[0]))
@@ -409,10 +417,14 @@ func SearchInSSTable(path string, searchId []byte) (MemtableEntry, error) {
 		all = append(all, id...) 
 		all = append(all, contentLength...)
 		all = append(all, content...)
-TODO: Add deserialize
-		return MemtableEntry{}, nil
+
+        entry := MemtableEntry{}
+		entry.Deserialize(all)
+
+		return entry, nil
 	}
 }
 ```
 
-
+## Conclusion
+In this post we went over some fundamental concepts for database design and implemented the basic building blocks. In the next post we'll expand the database by implementing the WAL and adding the logic for maintaining and working with table structures.

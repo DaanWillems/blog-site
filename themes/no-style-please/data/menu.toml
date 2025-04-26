@@ -10,13 +10,23 @@
 
 
 [[entries]]
-title = "all posts"
-
+title = "Blog"
   [entries.post_list]
   limit = 5
   show_more = true
   show_more_text = "See archive..."
   show_more_url = "posts"
+
+[[entries]]
+title = "Projects"
+[[entries.entries]]
+ title = "2D Physics engine in Rust (Projected Gauss-Seidel solver)"
+ url = "https://github.com/DaanWillems/pgs-solver"
+[[entries.entries]]
+ title = "Database implementation in Golang"
+ url = "https://github.com/DaanWillems/pgs-solver"
+
+
 
 # [[entries]]
 # title = "posts by category"
