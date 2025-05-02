@@ -1,7 +1,7 @@
 {
 	"version": 3,
 	"file": "main.css",
-	"sourceRoot": "/home/daan/workspace/blog-site",
+	"sourceRoot": "/root/workspace/blog-site",
 	"sources": [
 		"themes/no-style-please/assets/css/main.scss"
 	],
