@@ -1,5 +1,5 @@
 ---
-title: "Building a database: Part 1"
+title: "Building a database"
 date: "2025-04-24"
 summary: "Small summary"
 toc: true
