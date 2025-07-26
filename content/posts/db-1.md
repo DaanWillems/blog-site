@@ -1,5 +1,5 @@
 ---
-title: "Building a database"
+title: "Building a database (part 1): Basic design and persistence"
 date: "2025-04-24"
 summary: "Small summary"
 toc: true
@@ -341,7 +341,7 @@ func TestSerializeDeserialize(t *testing.T) {
 When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before.
 
 ```go
-func CreateSSTableFromMetable(memtable *Memtable, blockSize int) (*SSTable, error) {
+func CreateSSTableFromMemtable(memtable *Memtable, blockSize int) (*SSTable, error) {
     currentBlock := []byte{}
 	blocks := []byte{}
 
@@ -447,10 +447,9 @@ func TestSSTable(t *testing.T) {
 		memtable.Insert([]byte{byte(id)}, [][]byte{{byte(id)}, []byte("b")})
 	}
 
-	table, _ := CreateSSTableFromMetable(&memtable, 10)
+	table, _ := CreateSSTableFromMemtable(&memtable, 10)
 
 	tableBytes := table.Bytes()
-	fmt.Printf("%v", tableBytes)
 
 	reader := bufio.NewReader(bytes.NewReader(tableBytes))
 
