@@ -105,7 +105,7 @@ First we determine a static size for each block, typically around 2KB. We adhere
 
 The image below shows a possible block layout on disk with a 10 byte block size. The first 2 entries are placed in the first block, which leaves 2 bytes left. The next entry is 6 bytes and does not fit. The current block is padded with 2 bytes (marked in blue), and the new entry is added to the next block. 
 
-![Image displaying multiple blocks](/images/block2.png)
+![Image displaying multiple blocks](https://daanwillems.github.io/blog-site/images/block2.png)
 
 In a later part, we can use the predictable block structure to build an index that contains information about what keys are in which block. This will will greatly increase search speed. 
  
@@ -122,7 +122,7 @@ When a user inserts a new record, the action is written to the WAL and inserted 
 
 As more data is inserted over time, the memtable grows. When it has reached a certain size (e.g: 2MB). The table is written to a SSTable on disk. Over time the SSTables are compacted in the background.
 
-![Image displaying database design](/images/db_design.png)
+![Image displaying database design](https://daanwillems.github.io/blog-site/images/db_design.png)
 
 ### Structuring files and tables
 
@@ -222,7 +222,7 @@ func (m *Memtable) Insert(id []byte, values [][]byte) {
 ### Serializing the data
 In order to store the data on disk and in the WAL the data needs to be serialized. We'll convert an entry into a byte array with the following format:
 
-![Image displaying entry layout on disk](/images/entry_layout.png)
+![Image displaying entry layout on disk](https://daanwillems.github.io/blog-site/images/entry_layout.png)
 
 ```go
 func (entry *MemtableEntry) Serialize() (int, []byte) {

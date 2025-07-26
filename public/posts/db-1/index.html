@@ -135,7 +135,7 @@
 <li>To keep things simple if an entry is larger than the block size, it will never fit. The database will throw an error.</li>
 </ul>
 <p>The image below shows a possible block layout on disk with a 10 byte block size. The first 2 entries are placed in the first block, which leaves 2 bytes left. The next entry is 6 bytes and does not fit. The current block is padded with 2 bytes (marked in blue), and the new entry is added to the next block.</p>
-<p><img src="/images/block2.png" alt="Image displaying multiple blocks"></p>
+<p><img src="https://daanwillems.github.io/blog-site/images/block2.png" alt="Image displaying multiple blocks"></p>
 <p>In a later part, we can use the predictable block structure to build an index that contains information about what keys are in which block. This will will greatly increase search speed.</p>
 <h2 id="database-design">Database design</h2>
 <p>Alright, the SSTable provides a structure for storing data on disk optimized for insertion. However to have a working database, we need a few more components. In this section we cover the high level database design:</p>
@@ -152,7 +152,7 @@
 </ul>
 <p>When a user inserts a new record, the action is written to the WAL and inserted into the memory table (memtable). The memory table is ordered by the primary key, but the WAL is ordered by time. If the process crashes, all data in the memtable is lost. After restarting, the database process can replay the WAL to restore the memtable.</p>
 <p>As more data is inserted over time, the memtable grows. When it has reached a certain size (e.g: 2MB). The table is written to a SSTable on disk. Over time the SSTables are compacted in the background.</p>
-<p><img src="/images/db_design.png" alt="Image displaying database design"></p>
+<p><img src="https://daanwillems.github.io/blog-site/images/db_design.png" alt="Image displaying database design"></p>
 <h3 id="structuring-files-and-tables">Structuring files and tables</h3>
 <p>Each table in the database is given a separate directory with SSTables. The database also maintains a separate memtable per table. The WAL however is unified and contains the operations on all tables.</p>
 <p>Of course the database needs to keep track of what tables exist. When the database is initialized, it will create a &lsquo;book keeping&rsquo; table to store this information.</p>
@@ -226,7 +226,7 @@
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><h3 id="serializing-the-data">Serializing the data</h3>
 <p>In order to store the data on disk and in the WAL the data needs to be serialized. We&rsquo;ll convert an entry into a byte array with the following format:</p>
-<p><img src="/images/entry_layout.png" alt="Image displaying entry layout on disk"></p>
+<p><img src="https://daanwillems.github.io/blog-site/images/entry_layout.png" alt="Image displaying entry layout on disk"></p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">entry</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">MemtableEntry</span>) <span style="color:#a6e22e">Serialize</span>() (<span style="color:#66d9ef">int</span>, []<span style="color:#66d9ef">byte</span>) {
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">var</span> <span style="color:#a6e22e">header</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Buffer</span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">var</span> <span style="color:#a6e22e">content</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Buffer</span>
