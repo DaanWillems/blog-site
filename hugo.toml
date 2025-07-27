@@ -2,9 +2,7 @@ baseURL = 'https://example.org/'
 languageCode = 'en-us'
 title = 'Daan Willems'
 theme = 'no-style-please'
-[services]
-  [services.googleAnalytics]
-    id = "G-79EWKWX4P2"
+
 
 [caches]
   [caches.images]
