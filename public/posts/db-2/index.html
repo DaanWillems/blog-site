@@ -4,6 +4,8 @@
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
    <meta name="description" content="Small summary">  
+  
+  <script defer data-domain="daan.nl" src="https://stats.daan.nl/js/script.js"></script>
 
   <title>
     
@@ -39,8 +41,12 @@
         <aside >
             <nav id="TableOfContents">
   <ul>
-    <li><a href="#cleaning-up">Cleaning up</a></li>
-    <li><a href="#write-ahead-logging">Write-ahead logging</a></li>
+    <li><a href="#combining-the-memtable-and-sstable">Combining the Memtable and SSTable</a></li>
+    <li><a href="#write-ahead-logging">Write-ahead logging</a>
+      <ul>
+        <li><a href="#replaying">Replaying</a></li>
+      </ul>
+    </li>
     <li><a href="#conclusion">Conclusion</a></li>
   </ul>
 </nav>
@@ -48,20 +54,14 @@
     
 
     <p>In this part we&rsquo;ll improve the persistence and crash resistance of the database. We will also start to work on organizing multiple SSTables on disk.</p>
-<h2 id="cleaning-up">Cleaning up</h2>
+<h2 id="combining-the-memtable-and-sstable">Combining the Memtable and SSTable</h2>
+<p>In the previous part, we coded a simple Memtable and SSTable. In order to actually have a database we need to combine these two components into one program. If we insert into the database, it should be written to the memtable. If the memtable exceeds a given size, it should be flushed to disk. When querying we should first look into the memtable, and only then into the SSTable on disk.</p>
 <p>First we&rsquo;ll clean up the code a bit. All code files relating to the database internals are moved into a database package. We&rsquo;ll create a database.go file that will become the entrypoint into the package.</p>
 <p><img src="/images/directory-layout-part2.png" alt="Image displaying directory layout"></p>
 <p>In the database.go file we&rsquo;ll add logic for starting the database</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#f92672">package</span> <span style="color:#a6e22e">database</span>
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#f92672">import</span> (
-</span></span><span style="display:flex;"><span>	<span style="color:#e6db74">&#34;bufio&#34;</span>
-</span></span><span style="display:flex;"><span>	<span style="color:#e6db74">&#34;os&#34;</span>
-</span></span><span style="display:flex;"><span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Config</span> <span style="color:#66d9ef">struct</span> {
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">MemtableSize</span> <span style="color:#66d9ef">int</span> <span style="color:#75715e">//Threshold of entries before flushing to disk
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>}
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Config</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">MemtableSize</span> <span style="color:#66d9ef">int</span> <span style="color:#75715e">//Threshold of entries before flushing to disk</span>
+</span></span><span style="display:flex;"><span>}
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">memtable</span> <span style="color:#a6e22e">Memtable</span>
 </span></span><span style="display:flex;"><span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">config</span> <span style="color:#a6e22e">Config</span>
@@ -94,27 +94,27 @@
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">table</span>.<span style="color:#a6e22e">Flush</span>(<span style="color:#e6db74">&#34;./test.db&#34;</span>)
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">memtable</span> = <span style="color:#a6e22e">NewMemtable</span>() <span style="color:#75715e">// Reset memtable after flushing
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	}
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">memtable</span> = <span style="color:#a6e22e">NewMemtable</span>() <span style="color:#75715e">// Reset memtable after flushing</span>
+</span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><p>The insert function is also responsible for flushing and refreshing the memtable when it exceeds the maximum number of entires</p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">Query</span>(<span style="color:#a6e22e">id</span> <span style="color:#66d9ef">int</span>) ([]<span style="color:#66d9ef">byte</span>, <span style="color:#66d9ef">error</span>) {
-</span></span><span style="display:flex;"><span>	<span style="color:#75715e">//First check in the memtable
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">Get</span>([]<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)})
+</span></span><span style="display:flex;"><span>	<span style="color:#75715e">//First check in the memtable</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">Get</span>([]<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)})
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">entry</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
 </span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">values</span>[<span style="color:#ae81ff">0</span>], <span style="color:#66d9ef">nil</span>
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#75715e">//For now we only have the capability of writing and reading a single sstable from disk
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	<span style="color:#a6e22e">fd</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">Open</span>(<span style="color:#e6db74">&#34;./test.db&#34;</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#75715e">//For now we only have the capability of writing and reading a single sstable from disk</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">fd</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">Open</span>(<span style="color:#e6db74">&#34;./test.db&#34;</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
 </span></span><span style="display:flex;"><span>		panic(<span style="color:#a6e22e">err</span>)
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#a6e22e">fd</span>) <span style="color:#75715e">// creates a new reader
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#a6e22e">fd</span>) <span style="color:#75715e">// creates a new reader</span>
+</span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">SearchInSSTable</span>(<span style="color:#a6e22e">reader</span>, []<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)})
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
@@ -126,9 +126,83 @@
 </span></span></code></pre></div><p>The query function first looks into the memtable, and only after that into the SSTable on disk</p>
 <h2 id="write-ahead-logging">Write-ahead logging</h2>
 <p>The database has a basic level of persistence now. But if the program crashes or is terminated before writing the memtable to disk, this data is lost.</p>
-<p>To avoid this problem we can keep a separate file on disk to which all database operations are logged first called a WAL (Write-ahead log). Because this file is append only, it&rsquo;ll be very quick. Each time an entry gets inserted, we&rsquo;ll write it to the WAL first, and only then insert it into the memtable.</p>
+<p>To avoid this problem we can keep a separate file on disk to which all database operations are logged first, called a WAL (Write-ahead log). Because this file is append only, it&rsquo;ll be very quick. Each time an entry gets inserted, we&rsquo;ll write it to the WAL first, and only then insert it into the memtable.</p>
 <p>Should our program crash, we can read and &lsquo;replay&rsquo; the WAL to restore the state of the memtable. Once the memtable gets written to disk we can discard the WAL.</p>
-<h2 id="conclusion">Conclusion</h2>
+<p>The format for writing to the WAL is very simple, we&rsquo;ll serialize each entry and write the length of content + the content of the entry. This will also us to very easily read  it back. We&rsquo;ll also need a method for clearing the WAL once the memtable gets written.</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">wal_file</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">File</span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">wal_path</span> <span style="color:#66d9ef">string</span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">OpenWAL</span>(<span style="color:#a6e22e">path</span> <span style="color:#66d9ef">string</span>) {
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">var</span> <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">wal_path</span> = <span style="color:#a6e22e">path</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">wal_file</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">OpenFile</span>(<span style="color:#a6e22e">path</span>, <span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">O_APPEND</span>|<span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">O_CREATE</span>|<span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">O_WRONLY</span>, <span style="color:#ae81ff">0644</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>		panic(<span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">ResetWAL</span>() {
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">var</span> <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">wal_file</span>.<span style="color:#a6e22e">Close</span>()
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">wal_file</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">Create</span>(<span style="color:#a6e22e">wal_path</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>		panic(<span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">WriteEntryToWal</span>(<span style="color:#a6e22e">entry</span> <span style="color:#a6e22e">MemtableEntry</span>) {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">len</span>, <span style="color:#a6e22e">content</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">Serialize</span>()
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">wal_file</span>.<span style="color:#a6e22e">Write</span>([]<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">len</span>)})
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">wal_file</span>.<span style="color:#a6e22e">Write</span>(<span style="color:#a6e22e">content</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">wal_file</span>.<span style="color:#a6e22e">Sync</span>()
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><h3 id="replaying">Replaying</h3>
+<p>When the application starts, it should try to open the WAL into read mode and restore the memtable. We&rsquo;ll start by reading the first byte to get the entry size, and then the entry which gets deserialized and inserted into the memtable. We continue until there are no more entries to read. Conveniently the memtable object is accessible to us as it&rsquo;s all in the database package.</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">ReplayWal</span>() {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">fd</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">Open</span>(<span style="color:#a6e22e">wal_path</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>		panic(<span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">defer</span> <span style="color:#a6e22e">fd</span>.<span style="color:#a6e22e">Close</span>()
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#a6e22e">fd</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entryLen</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">entryLen</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">==</span> <span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">EOF</span> {
+</span></span><span style="display:flex;"><span>				<span style="color:#66d9ef">break</span>
+</span></span><span style="display:flex;"><span>			}
+</span></span><span style="display:flex;"><span>			panic(<span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">content</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, int(<span style="color:#a6e22e">entryLen</span>[<span style="color:#ae81ff">0</span>]))
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">content</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>			panic(<span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">MemtableEntry</span>{}
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">Deserialize</span>(<span style="color:#a6e22e">content</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">Insert</span>(<span style="color:#f92672">*</span><span style="color:#a6e22e">entry</span>)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>Now we only need to call the appropriate methods in the database.go file.
+In initialize we&rsquo;ll try to replay the wal to restore the memtable, and then open it for writing:</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">InitializeDatabase</span>(<span style="color:#a6e22e">cfg</span> <span style="color:#a6e22e">Config</span>) {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">memtable</span> = <span style="color:#a6e22e">NewMemtable</span>()
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">ReplayWal</span>(<span style="color:#e6db74">&#34;wal&#34;</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">OpenWAL</span>(<span style="color:#e6db74">&#34;wal&#34;</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">config</span> = <span style="color:#a6e22e">cfg</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>Before inserting into the memtable, we&rsquo;ll insert into the WAL</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#a6e22e">WriteEntryToWal</span>(<span style="color:#a6e22e">entry</span>)
+</span></span><span style="display:flex;"><span><span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">Insert</span>(<span style="color:#a6e22e">entry</span>)
+</span></span></code></pre></div><h2 id="conclusion">Conclusion</h2>
 <p>In this part we implemented a WAL to make sure data in the memtable is crash resistant. We also added the ability to store and search multiple SSTables on disk. It&rsquo;s starting to look like an actual database!</p>
 <p>In the next part we&rsquo;ll work on a very important feature: compacting tables. We&rsquo;ll implement a background process that automatically scans and compacts SSTables to reclaim disk space and improve lookup speeds.</p>
 
