@@ -28,8 +28,6 @@ Before starting with anything, it is important to determine the database require
 - Data written must be persistent (not lost on system restarts).
 - The database must be crash resistant (Data must never be lost if the database reports that it's inserted, even if the system crashes during a write).
 - There should be a basic schema mechanism to define the structure of the data.
-- It must support: strings, integers and booleans. 
-- It must support: Defining a primary key.
 - There should be a way of interfacing with the database (inserting, reading, updating and deleting data).
 - There should be a primary index to speed up finding data.
 - The database should be optimized for quick writes.
@@ -110,7 +108,7 @@ The image below shows a possible block layout on disk with a 10 byte block size.
 In a later part, we can use the predictable block structure to build an index that contains information about what keys are in which block. This will will greatly increase search speed. 
  
 ## Database design
-Alright, the SSTable provides a structure for storing data on disk optimized for insertion. However to have a working database, we need a few more components. In this section we cover the high level database design:
+The SSTable provides a structure for storing data on disk optimized for insertion. However to have a working database, we need a few more components. In this section we cover the high level database design:
 
 - A memory table that stores recent operations on the database
 
@@ -156,7 +154,7 @@ Let's start implementing some of the basic building blocks of the database. I ha
 
 First we implement the memtable component. We need the memtable to be able to support different types of table structures later on, so let's design it with that in mind.
 
-We'll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. Depending on the table structure, the primary key might be a a string, int or bool. The values can also be any type. In order to support this the primary key and values with be stored as byte arrays. When reading the data, the database can lookup the table structure to determine how to interpret the byte values. 
+We'll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. For now the primary key will be encoded as bytes, and the values will be a list of byte arrays. This allows us to store an type of data in the database, later on we might change this to better support our schema mechanism.
 
 ```go
 type Memtable struct {
@@ -338,7 +336,7 @@ func TestSerializeDeserialize(t *testing.T) {
 ```
 ### Creating the SSTable
 
-When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before.
+When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before. For now we'll only implement a single table, so bookkeeping will be very simple.
 
 ```go
 func CreateSSTableFromMemtable(memtable *Memtable, blockSize int) (*SSTable, error) {
@@ -470,4 +468,4 @@ func TestSSTable(t *testing.T) {
 ```
 
 ## Conclusion
-In this post we went over some fundamental concepts for database design and implemented the basic building blocks. In the next post we'll expand the database by implementing the WAL and adding the logic for maintaining and working with table structures.
+In this post we went over some fundamental concepts for database design and implemented the basic building blocks. In the next post we'll expand the database by implementing the WAL and managing multiple SSTable file on disk.
