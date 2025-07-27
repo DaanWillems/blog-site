@@ -4,10 +4,26 @@
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
    <meta name="description" content="Small summary">  
+  
+  
+      <script async src="https://www.googletagmanager.com/gtag/js?id=G-79EWKWX4P2"></script>
+      <script>
+        var doNotTrack = false;
+        if ( false ) {
+          var dnt = (navigator.doNotTrack || window.doNotTrack || navigator.msDoNotTrack);
+          var doNotTrack = (dnt == "1" || dnt == "yes");
+        }
+        if (!doNotTrack) {
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+          gtag('config', 'G-79EWKWX4P2');
+        }
+      </script>
 
   <title>
     
-      Building a database: Part 1
+      Building a database (part 1): Basic design and persistence
     
   </title>
 
@@ -33,7 +49,7 @@
                 </div>
 
 <article>
-    <h1>Building a database: Part 1</h1>
+    <h1>Building a database (part 1): Basic design and persistence</h1>
 
     
         <aside >
@@ -268,8 +284,8 @@
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">id</span> = <span style="color:#a6e22e">id</span>
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">mustReadByte</span>(<span style="color:#a6e22e">buf</span>) <span style="color:#75715e">//Discard content length
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">mustReadByte</span>(<span style="color:#a6e22e">buf</span>) <span style="color:#75715e">//Discard content length</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
 </span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">deleted_i</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">mustReadByte</span>(<span style="color:#a6e22e">buf</span>)
@@ -332,7 +348,7 @@
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><h3 id="creating-the-sstable">Creating the SSTable</h3>
 <p>When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before.</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">CreateSSTableFromMetable</span>(<span style="color:#a6e22e">memtable</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>, <span style="color:#a6e22e">blockSize</span> <span style="color:#66d9ef">int</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">SSTable</span>, <span style="color:#66d9ef">error</span>) {
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">CreateSSTableFromMemtable</span>(<span style="color:#a6e22e">memtable</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>, <span style="color:#a6e22e">blockSize</span> <span style="color:#66d9ef">int</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">SSTable</span>, <span style="color:#66d9ef">error</span>) {
 </span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">currentBlock</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">blocks</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
 </span></span><span style="display:flex;"><span>
@@ -340,17 +356,17 @@
 </span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">size</span>, <span style="color:#a6e22e">serialized_entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">Serialize</span>()
-</span></span><span style="display:flex;"><span>		<span style="color:#75715e">//Check to see if there is enough place in the block to add the entry
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">size</span> &gt; (<span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)) {
+</span></span><span style="display:flex;"><span>		<span style="color:#75715e">//Check to see if there is enough place in the block to add the entry</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">size</span> &gt; (<span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)) {
 </span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">size</span> &gt; <span style="color:#a6e22e">blockSize</span> {
-</span></span><span style="display:flex;"><span>				<span style="color:#75715e">//Will never fit
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>				<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">SSTable</span>{}, <span style="color:#a6e22e">errors</span>.<span style="color:#a6e22e">New</span>(<span style="color:#e6db74">&#34;Entry larger than max block size&#34;</span>)
+</span></span><span style="display:flex;"><span>				<span style="color:#75715e">//Will never fit</span>
+</span></span><span style="display:flex;"><span>				<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">SSTable</span>{}, <span style="color:#a6e22e">errors</span>.<span style="color:#a6e22e">New</span>(<span style="color:#e6db74">&#34;Entry larger than max block size&#34;</span>)
 </span></span><span style="display:flex;"><span>			}
-</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Pad remainder of block
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>			<span style="color:#a6e22e">padding</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)
+</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Pad remainder of block</span>
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">padding</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)
 </span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">currentBlock</span> = append(<span style="color:#a6e22e">currentBlock</span>, make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">padding</span>)<span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Prepare new block
-</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>			<span style="color:#a6e22e">blocks</span> = append(<span style="color:#a6e22e">blocks</span>, <span style="color:#a6e22e">currentBlock</span><span style="color:#f92672">...</span>)
+</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Prepare new block</span>
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">blocks</span> = append(<span style="color:#a6e22e">blocks</span>, <span style="color:#a6e22e">currentBlock</span><span style="color:#f92672">...</span>)
 </span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">currentBlock</span> = []<span style="color:#66d9ef">byte</span>{}
 </span></span><span style="display:flex;"><span>		}
 </span></span><span style="display:flex;"><span>
@@ -430,10 +446,9 @@
 </span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">Insert</span>([]<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)}, [][]<span style="color:#66d9ef">byte</span>{{byte(<span style="color:#a6e22e">id</span>)}, []byte(<span style="color:#e6db74">&#34;b&#34;</span>)})
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">table</span>, <span style="color:#a6e22e">_</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">CreateSSTableFromMetable</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">memtable</span>, <span style="color:#ae81ff">10</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">table</span>, <span style="color:#a6e22e">_</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">CreateSSTableFromMemtable</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">memtable</span>, <span style="color:#ae81ff">10</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">tableBytes</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">table</span>.<span style="color:#a6e22e">Bytes</span>()
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">fmt</span>.<span style="color:#a6e22e">Printf</span>(<span style="color:#e6db74">&#34;%v&#34;</span>, <span style="color:#a6e22e">tableBytes</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#a6e22e">tableBytes</span>))
 </span></span><span style="display:flex;"><span>
