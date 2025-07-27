@@ -3,7 +3,6 @@ languageCode = 'en-us'
 title = 'Daan Willems'
 theme = 'no-style-please'
 
-
 [caches]
   [caches.images]
     dir = ':cacheDir/images'
