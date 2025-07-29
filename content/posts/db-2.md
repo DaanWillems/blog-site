@@ -14,13 +14,17 @@ showTags: false
 In this part we'll improve the persistence and crash resistance of the database. We will also start to work on organizing multiple SSTables on disk. 
 
 ## Combining the Memtable and SSTable
-In the previous part, we coded a simple Memtable and SSTable. In order to actually have a database we need to combine these two components into one program. If we insert into the database, it should be written to the memtable. If the memtable exceeds a given size, it should be flushed to disk. When querying we should first look into the memtable, and only then into the SSTable on disk. 
+In the previous part, we coded a simple Memtable and SSTable to store data. The next step is two combine these two parts behind one interface. This will become the 'storage engine', the component of the database that is in charge of writing, reading and organizing in disk. 
 
-First we'll clean up the code a bit. All code files relating to the database internals are moved into a database package. We'll create a database.go file that will become the entrypoint into the package. 
+For now the behaviour of the storage engine can be described as follows:
+
+If we insert into the database, it should be written to the memtable. If the memtable exceeds a given size, it should be flushed to disk. When querying we should first look into the memtable, and only then into the SSTable on disk. 
+
+Before moving on, we'll clean up the code a bit. All code files relating to the storage engine  are moved into a package. We'll create a storage_engine.go file that will become the entrypoint into the package. All functions not in this file will be made private.
 
 ![Image displaying directory layout](/images/directory-layout-part2.png)
 
-In the database.go file we'll add logic for starting the database 
+In the storage_engine.go file we'll add logic for starting the storage engine 
 
 ```go
 type Config struct {
@@ -30,14 +34,14 @@ type Config struct {
 var memtable Memtable
 var config Config
 
-func InitializeDatabase(cfg Config) {
+func InitializeStorageEngine(cfg Config) {
 	memtable = NewMemtable()
 	config = cfg
 }
 ```
 The MemtableSize is the maximum number of entries the memtable may contain before flushing to disk. At a later point it will make more sense to look at the total number of bytes in the table, as entries can vary in size.  
 
-We'll also need methods for inserting and retrieving data
+We'll also need methods for inserting and retrieving data.
 
 ```go
 func Insert(id int, values []string) {
@@ -55,14 +59,14 @@ func Insert(id int, values []string) {
 	memtable.Insert(entry)
 
 	if memtable.entries.Len() >= config.MemtableSize {
-		table, err := CreateSSTableFromMemtable(&memtable, 10)
+		table, err := createSSTableFromMemtable(&memtable, 10)
 		if err != nil {
 			panic(err)
 		}
 
 		table.Flush("./test.db")
 
-		memtable = NewMemtable() // Reset memtable after flushing
+		memtable = newMemtable() // Reset memtable after flushing
 	}
 }
 ```
@@ -86,7 +90,7 @@ func Query(id int) ([]byte, error) {
 
 	reader := bufio.NewReader(fd) // creates a new reader
 
-	entry, err = SearchInSSTable(reader, []byte{byte(id)})
+	entry, err = searchInSSTable(reader, []byte{byte(id)})
 
 	if err != nil {
 		panic(err)
@@ -110,7 +114,7 @@ The format for writing to the WAL is very simple, we'll serialize each entry and
 var wal_file *os.File
 var wal_path string
 
-func OpenWAL(path string) {
+func openWAL(path string) {
 	var err error
 	wal_path = path
 	wal_file, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -119,7 +123,7 @@ func OpenWAL(path string) {
 	}
 }
 
-func ResetWAL() {
+func resetWAL() {
 	var err error
 	wal_file.Close()
 	wal_file, err = os.Create(wal_path)
@@ -128,7 +132,7 @@ func ResetWAL() {
 	}
 }
 
-func WriteEntryToWal(entry MemtableEntry) {
+func writeEntryToWal(entry MemtableEntry) {
 	len, content := entry.Serialize()
 	wal_file.Write([]byte{byte(len)})
 	wal_file.Write(content)
@@ -180,10 +184,10 @@ Now we only need to call the appropriate methods in the database.go file.
 In initialize we'll try to replay the wal to restore the memtable, and then open it for writing:
 
 ```go
-func InitializeDatabase(cfg Config) {
-	memtable = NewMemtable()
-	ReplayWal("wal")
-	OpenWAL("wal")
+func InitializeStorageEngine(cfg Config) {
+	memtable = newMemtable()
+	replayWal("wal")
+	openWAL("wal")
 	config = cfg
 }
 ```
@@ -191,9 +195,94 @@ func InitializeDatabase(cfg Config) {
 Before inserting into the memtable, we'll insert into the WAL
 
 ```go
-WriteEntryToWal(entry)
+writeEntryToWal(entry)
 memtable.Insert(entry)
 ```
+
+## File ledger
+Right now the data is always written to the file 'data.db'. This works well, until we want to flush the memtable a second time. We need a system for maintaining multiple files on disk. The storage engine needs to know which files already exist and can be searched.
+
+We'll start by making a dedicated directory for storing data, we can also place the WAL in this directory. Instead of writing to 'data.db' when flushing to disk, a unique name is generated for each new file. This way we can store data in more than one file.
+
+In order to keep track of what files contain data, we have to do some book keeping. Each time we add a new file, we'll also add the new file name to a ledger file. When we want to look for data in the storage engine, we can first do a lookup to see which files are available, and search them until we find what we are looking for. 
+
+ledger.go:
+```go
+package storage
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"time"
+)
+
+type FileLedger struct {
+	loaded     bool
+	ledgerFile *os.File
+	ledger     []string
+}
+
+var fileLedger FileLedger
+
+func closeLedger() {
+	if !fileLedger.loaded {
+		panic("File ledger is not loaded")
+	}
+
+	fileLedger.ledgerFile.Close()
+}
+
+func loadFileLedger() {
+	indexFile, err := os.OpenFile("./data/ledger", os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	scanner := bufio.NewScanner(indexFile)
+
+	dataFiles := []string{}
+	for scanner.Scan() {
+		dataFiles = append(dataFiles, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println(err)
+	}
+
+	fileLedger = FileLedger{
+		ledgerFile: indexFile,
+		ledger:     dataFiles,
+		loaded:     true,
+	}
+}
+
+func getDataIndex() []string {
+	return fileLedger.ledger
+}
+
+func addFileToLedger(fileName string) {
+	fileLedger.ledger = append(fileLedger.ledger, fileName)
+	fileLedger.ledgerFile.Write([]byte(fileName + "\n"))
+	fileLedger.ledgerFile.Sync()
+}
+
+func writeDataFile(table *SSTable) {
+	if !fileLedger.loaded {
+		panic("databaseFileStructure is not loaded")
+	}
+
+	fileName := fmt.Sprintf("%v", time.Now().UnixNano())
+
+	err := os.WriteFile(fmt.Sprintf("data/%v", fileName), *table.Blocks, 0644)
+	addFileToLedger(fileName)
+
+	if err != nil {
+		panic(err)
+	}
+}
+```
+
 
 ## Conclusion
 In this part we implemented a WAL to make sure data in the memtable is crash resistant. We also added the ability to store and search multiple SSTables on disk. It's starting to look like an actual database! 
