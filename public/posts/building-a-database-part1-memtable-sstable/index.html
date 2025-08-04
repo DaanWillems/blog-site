@@ -3,27 +3,13 @@
   <meta charset="utf-8" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-   <meta name="description" content="Small summary">  
+   <meta name="description" content="In this part I will cover the basic concepts of a database engine, including memory tables and writing to disk.">  
   
-  
-      <script async src="https://www.googletagmanager.com/gtag/js?id=G-79EWKWX4P2"></script>
-      <script>
-        var doNotTrack = false;
-        if ( false ) {
-          var dnt = (navigator.doNotTrack || window.doNotTrack || navigator.msDoNotTrack);
-          var doNotTrack = (dnt == "1" || dnt == "yes");
-        }
-        if (!doNotTrack) {
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', 'G-79EWKWX4P2');
-        }
-      </script>
+  <script defer data-domain="daan.nl" src="https://stats.daan.nl/js/script.js"></script>
 
   <title>
     
-      Building a database (part 1): Basic design and persistence
+      Building a database (part 1): Memory tables and writing to disk
     
   </title>
 
@@ -42,14 +28,14 @@
                     <a href="/">..</a>
 
                     <p>
-                        <time datetime="2025-04-24 00:00:00 &#43;0000 UTC">
-                            2025-04-24
+                        <time datetime="2025-08-01 00:00:00 &#43;0000 UTC">
+                            2025-08-01
                         </time>
                     </p>
                 </div>
 
 <article>
-    <h1>Building a database (part 1): Basic design and persistence</h1>
+    <h1>Building a database (part 1): Memory tables and writing to disk</h1>
 
     
         <aside >
@@ -83,7 +69,8 @@
         </aside>
     
 
-    <p>In almost every project I ever built, a database was a central component. Often I&rsquo;d read online about what specific database engines excelled in, and what they lacked. However, I never fully understood what this meant exactly. That always irritated me. I think in cases like this, the best way to learn more about a topic is to try to build something myself. So I set out with very little knowledge but a lot of optimism to try to build my own database engine.</p>
+    <p>In almost every project I ever built, a database was a central component. Often I&rsquo;d read online about what specific database engines excelled in, and what they lacked. However, I never fully understood what this meant exactly. I think the best way to learn more about a topic is to try to build something myself.</p>
+<p>In this and the following posts I will implement a simple database engine from scratch. My intent is to document the process, which means each new post will add incremental improvements. In this first post, I&rsquo;ll go over database basics and implement some building blocks.</p>
 <p>This post is the first part of building a simple database engine from scratch. It covers:</p>
 <ul>
 <li>Requirements for a simple database</li>
@@ -91,30 +78,30 @@
 <li>Key components of a database engine (WAL, Memtable, SSTables)</li>
 <li>First steps in implementation (in Go)</li>
 </ul>
-<p>In follow up posts I will try and optimize the database and also expand upon its functionality.</p>
+<p>In follow up posts I will try and optimize the database and also expand upon its functionality:</p>
+<ul>
+<li><a href="/posts/building-a-database-part2-wal-and-compaction/">Part 2 can be found here</a></li>
+</ul>
 <h2 id="requirements">Requirements</h2>
 <p>Before starting with anything, it is important to determine the database requirements. Clear requirements can direct the design while also preventing unnecessary work.</p>
 <ul>
 <li>Data written must be persistent (not lost on system restarts).</li>
-<li>The database must be crash resistant (Data must never be lost if the database reports that it&rsquo;s inserted, even if the system crashes during a write).</li>
+<li>The database must be durable (Data must never be lost if the database reports that it&rsquo;s inserted, even if the system crashes during a write).</li>
+<li>Insertion must be atomic.</li>
 <li>There should be a basic schema mechanism to define the structure of the data.</li>
-<li>It must support: strings, integers and booleans.</li>
-<li>It must support: Defining a primary key.</li>
 <li>There should be a way of interfacing with the database (inserting, reading, updating and deleting data).</li>
 <li>There should be a primary index to speed up finding data.</li>
-<li>The database should be optimized for quick writes.</li>
 </ul>
 <p>Out of scope:</p>
 <ul>
-<li>Relations between data (so no joins)</li>
-<li>No secondary indexes (Indexes on fields other than the primary key)</li>
-<li>Ability to update existing table structures</li>
+<li>Relations, this won&rsquo;t be a relational database.</li>
 </ul>
 <h2 id="writing-data-to-disk">Writing data to disk</h2>
 <p>A core part of a database is being able to store data persistently (on disk) and being able to search it.</p>
-<p>There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, it is inefficient to update a B-Tree stored on disk. SSTables excel at writing quickly, but are less optimized for reading. However, read speeds can be improved by optimization techniques like bloom filters and indexes. SSTables are used to power popular databases like CassandraDB. B-Tree&rsquo;s are often used in relational databases where reading is very important, like PostgreSQL and MySQL. For this project we will use SSTables.</p>
+<p>There are many ways of achieving this. Modern databases often use one of two data structures to store data: B-Trees or SSTables. While B-Trees are very good at searching through the data quickly, it is inefficient to update a B-Tree stored on disk. SSTables excel at writing quickly, but are less optimized for reading. However, read speeds can be improved by optimization techniques like bloom filters and indexes. They also lend themselves better for distributed systems, as they are easier to reason about. SSTables are used to power popular databases like CassandraDB  B-Tree&rsquo;s are often used in relational databases or databases where reading just as or more important than writing. Examples are PostgreSQL and MySQL.</p>
+<p>This project will use an architecture that is heavily inspired by CassandraDB&rsquo;s SSTable architecture.</p>
 <h3 id="sstables-in-practice">SSTables in practice</h3>
-<p>SSTables work by building a sorted string table on disk. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a certain size, it is written to disk as an SSTable. The SSTable is immutable, and cannot be updated. This means mutations on existing records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).</p>
+<p>SSTables (sorted string tables) are effectively a sorted list of strings that can be stored on disk. Because it&rsquo;s a sorted list, it&rsquo;s very efficient to search through the data quickly. When data is written to the database, it is initially stored in an in memory data structure. When the in memory data structure reaches a threshold size, it is written to disk as an SSTable. The SSTable is immutable, and cannot be updated. This means mutations on existing records must be written to a new SSTable. Altered records become new entries with the same key in the memtable, which are later flushed to new SSTables, deleted records also become new entries and are tombstoned (marked as deleted).</p>
 <p>Imagine a key value table written and stored on disk.</p>
 <p>Table 1:</p>
 <pre tabindex="0"><code>Key, Deleted, Value
@@ -143,18 +130,18 @@
 </code></pre><p>By using a merge sort, it is efficient to merge 2 sorted lists into 1 sorted list.</p>
 <p>SSTables enable quick writes, as the database only ever has to append to a file, which is much quicker than writing to a file in a random location.</p>
 <h3 id="blocks">Blocks</h3>
-<p>It&rsquo;s impossible to predict the length of an entry, it depends on what the user is storing. This means that if multiple entries are written to a SSTable, we cannot know where entries start and end without scanning the file from the beginning. To address this, SSTables are typically structured into blocks of fixed size. This opens the door for many possible search optimizations. Let&rsquo;s investigate how these blocks are structured.</p>
+<p>It&rsquo;s impossible to predict the length of an entry as it depends on what the user is storing. This means that if multiple entries are written to a SSTable, we cannot know where entries start and end without scanning the file from the beginning. To address this, SSTables are typically structured into blocks of fixed size. This opens the door for many possible search optimizations. Let&rsquo;s investigate how these blocks are structured.</p>
 <p>First we determine a static size for each block, typically around 2KB. We adhere to the following rules when writing to block:</p>
 <ul>
 <li>Each block always starts with a new entry to ensure entries are never split across block boundaries.</li>
-<li>If an entry cannot be added to a block without exceeding the remaining space in the block, the entry is added to a new block. The current block is padded with empty bytes. Padding is important because we want blocks of fixed size, but also wastes some space on disk.</li>
+<li>If an entry cannot be added to a block without exceeding the remaining space in the block, the entry is added to a new block. The current block is padded with empty bytes. Padding is important because we want blocks of fixed size, but this also wastes some space on disk.</li>
 <li>To keep things simple if an entry is larger than the block size, it will never fit. The database will throw an error.</li>
 </ul>
 <p>The image below shows a possible block layout on disk with a 10 byte block size. The first 2 entries are placed in the first block, which leaves 2 bytes left. The next entry is 6 bytes and does not fit. The current block is padded with 2 bytes (marked in blue), and the new entry is added to the next block.</p>
 <p><img src="https://daanwillems.github.io/blog-site/images/block2.png" alt="Image displaying multiple blocks"></p>
 <p>In a later part, we can use the predictable block structure to build an index that contains information about what keys are in which block. This will will greatly increase search speed.</p>
 <h2 id="database-design">Database design</h2>
-<p>Alright, the SSTable provides a structure for storing data on disk optimized for insertion. However to have a working database, we need a few more components. In this section we cover the high level database design:</p>
+<p>The SSTable provides a structure for storing data on disk optimized for insertion. However to have a working database, we need a few more components. In this section we cover the high level database design:</p>
 <ul>
 <li>
 <p>A memory table that stores recent operations on the database</p>
@@ -185,7 +172,7 @@
 <p>Let&rsquo;s start implementing some of the basic building blocks of the database. I have decided to use Golang as I&rsquo;m familiar with it and it&rsquo;s easy to read.</p>
 <h3 id="memory-table">Memory table</h3>
 <p>First we implement the memtable component. We need the memtable to be able to support different types of table structures later on, so let&rsquo;s design it with that in mind.</p>
-<p>We&rsquo;ll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. Depending on the table structure, the primary key might be a a string, int or bool. The values can also be any type. In order to support this the primary key and values with be stored as byte arrays. When reading the data, the database can lookup the table structure to determine how to interpret the byte values.</p>
+<p>We&rsquo;ll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. For now the primary key will be encoded as bytes, and the values will be a list of byte arrays. This allows us to store an type of data in the database, later on we might change this to better support our schema mechanism.</p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Memtable</span> <span style="color:#66d9ef">struct</span> {
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entries</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">list</span>.<span style="color:#a6e22e">List</span>
 </span></span><span style="display:flex;"><span>}
@@ -347,113 +334,141 @@
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><h3 id="creating-the-sstable">Creating the SSTable</h3>
-<p>When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before.</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">CreateSSTableFromMemtable</span>(<span style="color:#a6e22e">memtable</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>, <span style="color:#a6e22e">blockSize</span> <span style="color:#66d9ef">int</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">SSTable</span>, <span style="color:#66d9ef">error</span>) {
-</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">currentBlock</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">blocks</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">size</span>, <span style="color:#a6e22e">serialized_entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">Serialize</span>()
-</span></span><span style="display:flex;"><span>		<span style="color:#75715e">//Check to see if there is enough place in the block to add the entry</span>
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">size</span> &gt; (<span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)) {
-</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">size</span> &gt; <span style="color:#a6e22e">blockSize</span> {
-</span></span><span style="display:flex;"><span>				<span style="color:#75715e">//Will never fit</span>
-</span></span><span style="display:flex;"><span>				<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">SSTable</span>{}, <span style="color:#a6e22e">errors</span>.<span style="color:#a6e22e">New</span>(<span style="color:#e6db74">&#34;Entry larger than max block size&#34;</span>)
-</span></span><span style="display:flex;"><span>			}
-</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Pad remainder of block</span>
-</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">padding</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)
-</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">currentBlock</span> = append(<span style="color:#a6e22e">currentBlock</span>, make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">padding</span>)<span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Prepare new block</span>
-</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">blocks</span> = append(<span style="color:#a6e22e">blocks</span>, <span style="color:#a6e22e">currentBlock</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">currentBlock</span> = []<span style="color:#66d9ef">byte</span>{}
-</span></span><span style="display:flex;"><span>		}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">currentBlock</span> = append(<span style="color:#a6e22e">currentBlock</span>, <span style="color:#a6e22e">serialized_entry</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>	}
-</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">padding</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> len(<span style="color:#a6e22e">currentBlock</span>)
-</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">currentBlock</span> = append(<span style="color:#a6e22e">currentBlock</span>, make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">padding</span>)<span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">blocks</span> = append(<span style="color:#a6e22e">blocks</span>, <span style="color:#a6e22e">currentBlock</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">SSTable</span>{<span style="color:#a6e22e">Blocks</span>: <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">blocks</span>}, <span style="color:#66d9ef">nil</span>
+<p>When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before. For now we&rsquo;ll only implement a single table, so bookkeeping will be very simple.</p>
+<p>First we&rsquo;ll create a custom SSTableWriter and Reader. These will use a bufio Reader/Writer to access the files. Bufio is much quicker than writing to files directly, and also allows us to write to in memory buffers, which is helpful for testing.</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">SSTableWriter</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">buffer</span>          <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Writer</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">currentBlockLen</span> <span style="color:#66d9ef">int</span> <span style="color:#75715e">//The length of the current block we&#39;re writing to</span>
 </span></span><span style="display:flex;"><span>}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">table</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">SSTable</span>) <span style="color:#a6e22e">Flush</span>(<span style="color:#a6e22e">path</span> <span style="color:#66d9ef">string</span>) <span style="color:#66d9ef">error</span> {
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">os</span>.<span style="color:#a6e22e">WriteFile</span>(<span style="color:#a6e22e">path</span>, <span style="color:#f92672">*</span><span style="color:#a6e22e">table</span>.<span style="color:#a6e22e">Blocks</span>, <span style="color:#ae81ff">0644</span>)
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">SSTableReader</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Reader</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">newSSTableReader</span>(<span style="color:#a6e22e">buffer</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Reader</span>) <span style="color:#a6e22e">SSTableReader</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">SSTableReader</span>{
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">reader</span>: <span style="color:#a6e22e">buffer</span>,
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">newSSTableWriter</span>(<span style="color:#a6e22e">buffer</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Writer</span>) <span style="color:#a6e22e">SSTableWriter</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">SSTableWriter</span>{
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">buffer</span>:          <span style="color:#a6e22e">buffer</span>,
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">currentBlockLen</span>: <span style="color:#ae81ff">0</span>,
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>Next we&rsquo;ll make a function for writing a single entry to the buffer</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">writer</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">SSTableWriter</span>) <span style="color:#a6e22e">writeSingleEntry</span>(<span style="color:#a6e22e">entry</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">MemtableEntry</span>) <span style="color:#66d9ef">error</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">:=</span> <span style="color:#ae81ff">100</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">size</span>, <span style="color:#a6e22e">serialized_entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">serialize</span>()
+</span></span><span style="display:flex;"><span>	<span style="color:#75715e">//Check to see if there is enough place in the block to add the entry</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">size</span> &gt; (<span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> <span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">currentBlockLen</span>) {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">size</span> &gt; <span style="color:#a6e22e">blockSize</span> {
+</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Will never fit</span>
+</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">errors</span>.<span style="color:#a6e22e">New</span>(<span style="color:#e6db74">&#34;entry larger than max block size&#34;</span>)
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#75715e">//Pad remainder of block</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">padding</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">-</span> <span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">currentBlockLen</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Write</span>(make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">padding</span>))
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">currentBlockLen</span> = <span style="color:#ae81ff">0</span>
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">currentBlockLen</span> <span style="color:#f92672">+=</span> <span style="color:#a6e22e">size</span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Write</span>(<span style="color:#a6e22e">serialized_entry</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">panicIfErr</span>(<span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Flush</span>()
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>And finally a function for iterating through the memtable and writing each entry</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">writer</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">SSTableWriter</span>) <span style="color:#a6e22e">writeFromMemtable</span>(<span style="color:#a6e22e">memtable</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Memtable</span>) <span style="color:#66d9ef">error</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">entries</span>.<span style="color:#a6e22e">Front</span>(); <span style="color:#a6e22e">e</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span>; <span style="color:#a6e22e">e</span> = <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Next</span>() {
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">Value</span>.(<span style="color:#a6e22e">MemtableEntry</span>)
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">writeSingleEntry</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">entry</span>)
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><h3 id="searching-in-the-sstable">Searching in the SSTable</h3>
 <p>We can now do a very simple lookup in the table. This implementation is just to try it out, later we&rsquo;ll replace this with a faster solution.</p>
 <p>To prevent having to load the entire file in from memory we use the bufio package.</p>
-<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">SearchInSSTable</span>(<span style="color:#a6e22e">path</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">searchId</span> []<span style="color:#66d9ef">byte</span>) (<span style="color:#a6e22e">MemtableEntry</span>, <span style="color:#66d9ef">error</span>) {
-</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">idSize</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">idSize</span>)
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">reader</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">SSTableReader</span>) <span style="color:#a6e22e">readNextEntry</span>() (<span style="color:#a6e22e">MemtableEntry</span>, <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">idSize</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> { <span style="color:#75715e">//If the size is 0, it&#39;s padding in a block. Keep looking until a new block or EOF</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">idSize</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
 </span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">MemtableEntry</span>{}, <span style="color:#a6e22e">err</span>
 </span></span><span style="display:flex;"><span>		}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">idSize</span>[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">==</span> byte(<span style="color:#ae81ff">0</span>) {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">idSize</span>[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">!=</span> byte(<span style="color:#ae81ff">0</span>) {
+</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">break</span>
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">id</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, int(<span style="color:#a6e22e">idSize</span>[<span style="color:#ae81ff">0</span>]))
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">contentLength</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">id</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">MemtableEntry</span>{}, <span style="color:#a6e22e">err</span>
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">contentLength</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">MemtableEntry</span>{}, <span style="color:#a6e22e">err</span>
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">content</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">contentLength</span>[<span style="color:#ae81ff">0</span>])
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">content</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">MemtableEntry</span>{}, <span style="color:#a6e22e">err</span>
+</span></span><span style="display:flex;"><span>	}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">idSize</span><span style="color:#f92672">...</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">id</span><span style="color:#f92672">...</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">contentLength</span><span style="color:#f92672">...</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">content</span><span style="color:#f92672">...</span>)
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">MemtableEntry</span>{}
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">deserialize</span>(<span style="color:#a6e22e">all</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">entry</span>, <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">scanSSTable</span>(<span style="color:#a6e22e">buffer</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Reader</span>, <span style="color:#a6e22e">searchId</span> []<span style="color:#66d9ef">byte</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">MemtableEntry</span>, <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">newSSTableReader</span>(<span style="color:#a6e22e">buffer</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">readNextEntry</span>()
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">checkEOF</span>(<span style="color:#a6e22e">err</span>) {
+</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>, <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Equal</span>(<span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">id</span>, <span style="color:#a6e22e">searchId</span>) {
 </span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">continue</span>
 </span></span><span style="display:flex;"><span>		}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">id</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, int(<span style="color:#a6e22e">idSize</span>[<span style="color:#ae81ff">0</span>]))
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">contentLength</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">id</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
-</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">MemtableEntry</span>{}, <span style="color:#a6e22e">err</span>
-</span></span><span style="display:flex;"><span>		}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">contentLength</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
-</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">MemtableEntry</span>{}, <span style="color:#a6e22e">err</span>
-</span></span><span style="display:flex;"><span>		}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Equal</span>(<span style="color:#a6e22e">id</span>, <span style="color:#a6e22e">searchId</span>) {
-</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Discard</span>(int(<span style="color:#a6e22e">contentLength</span>[<span style="color:#ae81ff">0</span>]))
-</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">continue</span>
-</span></span><span style="display:flex;"><span>		}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">content</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">contentLength</span>[<span style="color:#ae81ff">0</span>])
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">content</span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
-</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">MemtableEntry</span>{}, <span style="color:#a6e22e">err</span>
-</span></span><span style="display:flex;"><span>		}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">all</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">idSize</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">id</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">contentLength</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">content</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">fmt</span>.<span style="color:#a6e22e">Printf</span>(<span style="color:#e6db74">&#34;%v \n&#34;</span>, <span style="color:#a6e22e">all</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">fmt</span>.<span style="color:#a6e22e">Println</span>(<span style="color:#e6db74">&#34;&#34;</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">MemtableEntry</span>{}
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">Deserialize</span>(<span style="color:#a6e22e">all</span>)
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">entry</span>, <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">entry</span>, <span style="color:#66d9ef">nil</span>
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><p>To wrap up I&rsquo;ll also write a unit test to see if the SSTable is working as expected.</p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">TestSSTable</span>(<span style="color:#a6e22e">t</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">testing</span>.<span style="color:#a6e22e">T</span>) {
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">memtable</span> = <span style="color:#a6e22e">NewMemtable</span>()
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">memtable</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">newMemtable</span>()
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">id</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#ae81ff">10</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">Insert</span>([]<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)}, [][]<span style="color:#66d9ef">byte</span>{{byte(<span style="color:#a6e22e">id</span>)}, []byte(<span style="color:#e6db74">&#34;b&#34;</span>)})
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">memtable</span>.<span style="color:#a6e22e">insertRaw</span>([]<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)}, [][]<span style="color:#66d9ef">byte</span>{{byte(<span style="color:#a6e22e">id</span>)}, []byte(<span style="color:#e6db74">&#34;b&#34;</span>)})
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">table</span>, <span style="color:#a6e22e">_</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">CreateSSTableFromMemtable</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">memtable</span>, <span style="color:#ae81ff">10</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">buffer</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">Buffer</span>{}
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">writer</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">newSSTableWriter</span>(<span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">NewWriter</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">buffer</span>))
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">tableBytes</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">table</span>.<span style="color:#a6e22e">Bytes</span>()
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">writer</span>.<span style="color:#a6e22e">writeFromMemtable</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">memtable</span>)
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#a6e22e">tableBytes</span>))
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">reader</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">NewReader</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">buffer</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> <span style="color:#a6e22e">id</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#ae81ff">10</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">result</span>, <span style="color:#a6e22e">_</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">SearchInSSTable</span>(<span style="color:#a6e22e">reader</span>, []<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)})
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">result</span>, <span style="color:#a6e22e">_</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">scanSSTable</span>(<span style="color:#a6e22e">reader</span>, []<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)})
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">MemtableEntry</span>{
 </span></span><span style="display:flex;"><span>			[]<span style="color:#66d9ef">byte</span>{byte(<span style="color:#a6e22e">id</span>)},
@@ -461,13 +476,13 @@
 </span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">false</span>,
 </span></span><span style="display:flex;"><span>		}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">reflect</span>.<span style="color:#a6e22e">DeepEqual</span>(<span style="color:#a6e22e">entry</span>, <span style="color:#a6e22e">result</span>) {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> !<span style="color:#a6e22e">reflect</span>.<span style="color:#a6e22e">DeepEqual</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">entry</span>, <span style="color:#a6e22e">result</span>) {
 </span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">t</span>.<span style="color:#a6e22e">Errorf</span>(<span style="color:#e6db74">&#34;Result does not match query. \nExpected: \n%v\n Got:\n %v&#34;</span>, <span style="color:#a6e22e">entry</span>, <span style="color:#a6e22e">result</span>)
 </span></span><span style="display:flex;"><span>		}
 </span></span><span style="display:flex;"><span>	}
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><h2 id="conclusion">Conclusion</h2>
-<p>In this post we went over some fundamental concepts for database design and implemented the basic building blocks. In the next post we&rsquo;ll expand the database by implementing the WAL and adding the logic for maintaining and working with table structures.</p>
+<p>In this post we went over some fundamental concepts for database design and implemented the basic building blocks. In the next post we&rsquo;ll expand the database by implementing the WAL and managing multiple SSTable file on disk.</p>
 
 </article>
 
