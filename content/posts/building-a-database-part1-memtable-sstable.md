@@ -163,9 +163,9 @@ type Memtable struct {
 	entries *list.List
 }
 
-type MemtableEntry struct {
+type Entry struct {
 	id      []byte
-	values  [][]byte
+	value   []byte
 	deleted bool
 }
 ```
@@ -225,7 +225,7 @@ In order to store the data on disk and in the WAL the data needs to be serialize
 ![Image displaying entry layout on disk](https://daanwillems.github.io/blog-site/images/entry_layout.png)
 
 ```go
-func (entry *MemtableEntry) Serialize() (int, []byte) {
+func (entry *Entry) serialize() (int, []byte) {
 	var header bytes.Buffer
 	var content bytes.Buffer
 
@@ -238,14 +238,8 @@ func (entry *MemtableEntry) Serialize() (int, []byte) {
 		content.WriteByte(0)
 	}
 
-	content.WriteByte(byte(len(entry.values)))
-	for _, v := range entry.values {
-		content.WriteByte(byte(len(v)))
-		content.Write(v)
-	}
-
-	contentBytes := content.Bytes()
-	header.WriteByte(byte(len(contentBytes)))
+	content.WriteByte(byte(len(entry.value)))
+	content.Write(entry.value)
 
 	bytes := append(header.Bytes(), content.Bytes()...)
 
@@ -256,7 +250,7 @@ func (entry *MemtableEntry) Serialize() (int, []byte) {
 To read it back into the data structure:
 
 ```go
-func (entry *MemtableEntry) Deserialize(entryBytes []byte) error {
+func (entry *Entry) deserialize(entryBytes []byte) error {
 	buf := bytes.NewBuffer(entryBytes)
 
 	idLen, err := mustReadByte(buf)
@@ -270,10 +264,6 @@ func (entry *MemtableEntry) Deserialize(entryBytes []byte) error {
 	}
 	entry.id = id
 
-	_, err = mustReadByte(buf) //Discard content length
-	if err != nil {
-		return err
-	}
 	deleted_i, err := mustReadByte(buf)
 	if err != nil {
 		return err
@@ -283,21 +273,17 @@ func (entry *MemtableEntry) Deserialize(entryBytes []byte) error {
 		entry.deleted = true
 	}
 
-	valuesCount, err := mustReadByte(buf)
+	valueLen, err := mustReadByte(buf)
 	if err != nil {
 		return err
 	}
-	for range valuesCount {
-		valueLen, err := mustReadByte(buf)
-		if err != nil {
-			return err
-		}
-		value, err := mustReadN(buf, int(valueLen))
-		if err != nil {
-			return err
-		}
-		entry.values = append(entry.values, value)
+
+	value, err := mustReadN(buf, int(valueLen))
+	if err != nil {
+		return err
 	}
+	entry.value = value
+
 	return nil
 }
 ```
@@ -305,15 +291,15 @@ func (entry *MemtableEntry) Deserialize(entryBytes []byte) error {
 To test whether the serialization is working, we write some unit tests.
 ```go
 func TestSerializeDeserializeStr(t *testing.T) {
-	e := MemtableEntry{
+	e := Entry{
 		id:      []byte("abc"),
-		values:  [][]byte{[]byte("a"), []byte("b")},
+		value:   []byte("abcd"),
 		deleted: false,
 	}
 
-	_, s := e.Serialize()
-	e1 := MemtableEntry{}
-	e1.Deserialize(s)
+	_, s := e.serialize()
+	e1 := Entry{}
+	e1.deserialize(s)
 
 	if !reflect.DeepEqual(e, e1) {
 		t.Errorf("Deserialized struct does not match original.\n Expected \n%v \n got \n%v", e, e1)
@@ -321,15 +307,15 @@ func TestSerializeDeserializeStr(t *testing.T) {
 }
 
 func TestSerializeDeserialize(t *testing.T) {
-	e := MemtableEntry{
-		id:      []byte{byte(9)},
-		values:  [][]byte{[]byte("a"), []byte("b")},
+	e := Entry{
+		id:      intToBytes(368),
+		value:   intToBytes(368),
 		deleted: false,
 	}
 
-	_, s := e.Serialize()
-	e1 := MemtableEntry{}
-	e1.Deserialize(s)
+	_, s := e.serialize()
+	e1 := Entry{}
+	e1.deserialize(s)
 
 	if !reflect.DeepEqual(e, e1) {
 		t.Errorf("Deserialized struct does not match original.\n Expected \n%v \n got \n%v", e, e1)
@@ -337,7 +323,6 @@ func TestSerializeDeserialize(t *testing.T) {
 }
 ```
 ### Creating the SSTable
-
 When the memtable is full, we want to store it to disk. This is where the SSTable comes in. To build the table, we serialize each entry in the list. We then need to write to the block structure as defined before. For now we'll only implement a single table, so bookkeeping will be very simple.
 
 First we'll create a custom SSTableWriter and Reader. These will use a bufio Reader/Writer to access the files. Bufio is much quicker than writing to files directly, and also allows us to write to in memory buffers, which is helpful for testing.
@@ -349,13 +334,19 @@ type SSTableWriter struct {
 }
 
 type SSTableReader struct {
-	reader *bufio.Reader
+	reader     *bufio.Reader
 }
 
 func newSSTableReader(buffer *bufio.Reader) SSTableReader {
 	return SSTableReader{
-		reader: buffer,
+		reader:     buffer,
 	}
+}
+
+func newSSTableReaderFromPath(path string) SSTableReader {
+	fd, err := os.Open(path)
+	panicIfErr(err)
+	return newSSTableReader(bufio.NewReader(fd))
 }
 
 func newSSTableWriter(buffer *bufio.Writer) SSTableWriter {
@@ -364,12 +355,19 @@ func newSSTableWriter(buffer *bufio.Writer) SSTableWriter {
 		currentBlockLen: 0,
 	}
 }
+
+func newSSTableWriterFromPath(path string) (*os.File, SSTableWriter) {
+	fd, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	panicIfErr(err)
+	return fd, newSSTableWriter(bufio.NewWriter(fd))
+}
 ```
 
 Next we'll make a function for writing a single entry to the buffer
 ```go
-func (writer *SSTableWriter) writeSingleEntry(entry *MemtableEntry) error {
+func (writer *SSTableWriter) writeSingleEntry(entry *Entry) error {
 	blockSize := 100
+
 	size, serialized_entry := entry.serialize()
 	//Check to see if there is enough place in the block to add the entry
 	if size > (blockSize - writer.currentBlockLen) {
@@ -380,7 +378,8 @@ func (writer *SSTableWriter) writeSingleEntry(entry *MemtableEntry) error {
 
 		//Pad remainder of block
 		padding := blockSize - writer.currentBlockLen
-		writer.buffer.Write(make([]byte, padding))
+		_, err := writer.buffer.Write(make([]byte, padding))
+		panicIfErr(err)
 
 		writer.currentBlockLen = 0
 	}
@@ -410,48 +409,58 @@ We can now do a very simple lookup in the table. This implementation is just to 
 
 To prevent having to load the entire file in from memory we use the bufio package.
 ```go
-func (reader *SSTableReader) readNextEntry() (MemtableEntry, error) {
+func (reader *SSTableReader) readNextEntry() (Entry, error) {
 	idSize := make([]byte, 1)
 
 	for { //If the size is 0, it's padding in a block. Keep looking until a new block or EOF
 		_, err := reader.reader.Read(idSize)
 
 		if err != nil {
-			return MemtableEntry{}, err
+			return Entry{}, err
 		}
 
 		if idSize[0] != byte(0) {
+			//Try to read next block into buffer
+			reader.reader.Peek(config.blockSize)
 			break
+		} else {
+			continue
 		}
 	}
 
 	id := make([]byte, int(idSize[0]))
-	contentLength := make([]byte, 1)
-
 	_, err := reader.reader.Read(id)
 	if err != nil {
-		return MemtableEntry{}, err
+		return Entry{}, err
 	}
 
-	_, err = reader.reader.Read(contentLength)
+	deleted := make([]byte, 1)
+	_, err = reader.reader.Read(deleted)
 	if err != nil {
-		return MemtableEntry{}, err
+		return Entry{}, err
 	}
 
-	content := make([]byte, contentLength[0])
-	_, err = reader.reader.Read(content)
+	valueLength := make([]byte, 1)
+	_, err = reader.reader.Read(valueLength)
+	if err != nil {
+		return Entry{}, err
+	}
+
+	value := make([]byte, valueLength[0])
+	_, err = reader.reader.Read(value)
 
 	if err != nil {
-		return MemtableEntry{}, err
+		return Entry{}, err
 	}
 
 	all := []byte{}
 	all = append(all, idSize...)
 	all = append(all, id...)
-	all = append(all, contentLength...)
-	all = append(all, content...)
+	all = append(all, deleted...)
+	all = append(all, valueLength...)
+	all = append(all, value...)
 
-	entry := MemtableEntry{}
+	entry := Entry{}
 	entry.deserialize(all)
 	return entry, nil
 }
@@ -476,30 +485,34 @@ To wrap up I'll also write a unit test to see if the SSTable is working as expec
 
 ```go
 func TestSSTable(t *testing.T) {
+	config = Config{
+		blockSize: 100,
+	}
+
 	memtable := newMemtable()
 
-	for id := range 10 {
-		memtable.insertRaw([]byte{byte(id)}, [][]byte{{byte(id)}, []byte("b")})
+	for id := range 3000 {
+		memtable.insertRaw(intToBytes(id), intToBytes(id))
 	}
 
 	buffer := bytes.Buffer{}
 	writer := newSSTableWriter(bufio.NewWriter(&buffer))
-
 	writer.writeFromMemtable(&memtable)
 
 	reader := bufio.NewReader(&buffer)
 
-	for id := range 10 {
-		result, _ := scanSSTable(reader, []byte{byte(id)})
+	for id := range 3000 {
+		result, _ := scanSSTable(reader, intToBytes(id))
 
-		entry := MemtableEntry{
-			[]byte{byte(id)},
-			[][]byte{{byte(id)}, []byte("b")},
+		entry := Entry{
+			intToBytes(id),
+			intToBytes(id),
 			false,
 		}
 
 		if !reflect.DeepEqual(&entry, result) {
 			t.Errorf("Result does not match query. \nExpected: \n%v\n Got:\n %v", entry, result)
+			return
 		}
 	}
 }

@@ -31,6 +31,7 @@ In the storage_engine.go file we'll add logic for starting the storage engine
 type Config struct {
 	MemtableSize  int //Threshold of entries before flushing to disk
 	DataDirectory string
+	blockSize     int
 }
 
 var memtable Memtable
@@ -47,14 +48,9 @@ Let's write the logic for inserting data into the storage engine.
 
 ```go
 func Insert(id int, values []string) {
-	byteValues := [][]byte{}
-	for _, v := range values {
-		byteValues = append(byteValues, []byte(v))
-	}
-
-	entry := MemtableEntry{
+	entry := Entry{
 		id:      []byte{byte(id)},
-		values:  byteValues,
+		value:   value,
 		deleted: false,
 	}
 
@@ -98,7 +94,7 @@ func Query(id int) ([]byte, error) {
 		panic(err)
 	}
 
-	return entry.values[0], nil
+	return entry.value, nil
 }
 ```
 The query function first looks into the memtable, and only after that into the SSTable on disk
@@ -310,15 +306,10 @@ func Close() {
 Finally let's update the insert and query functions so they use the ledger.
 
 ```go
-func Insert(id int, values []string) {
-	byteValues := [][]byte{}
-	for _, v := range values {
-		byteValues = append(byteValues, []byte(v))
-	}
-
-	entry := MemtableEntry{
+func Insert(id int, value []byte) {
+	entry := Entry{
 		id:      []byte{byte(id)},
-		values:  byteValues,
+		value:   value,
 		deleted: false,
 	}
 
@@ -337,7 +328,7 @@ func Query(id int) ([]byte, error) {
 	entry := memtable.Get([]byte{byte(id)})
 
 	if entry != nil {
-		return entry.values[0], nil
+		return entry.value, nil
 	}
 
 	for _, path := range getDataIndex() {
@@ -354,7 +345,7 @@ func Query(id int) ([]byte, error) {
 			continue
 		}
 
-		return entry.values[0], nil
+		return entry.value, nil
 	}
 
 	return nil, nil

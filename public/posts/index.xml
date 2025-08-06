@@ -6,19 +6,19 @@
     <description>Recent content in Posts on Daan Willems</description>
     <generator>Hugo</generator>
     <language>en-us</language>
-    <lastBuildDate>Sat, 26 Jul 2025 00:00:00 +0000</lastBuildDate>
+    <lastBuildDate>Mon, 04 Aug 2025 00:00:00 +0000</lastBuildDate>
     <atom:link href="http://localhost:1313/posts/index.xml" rel="self" type="application/rss+xml" />
     <item>
       <title>Building a database (part 2): Write-ahead logging and compaction</title>
       <link>http://localhost:1313/posts/building-a-database-part2-wal-and-compaction/</link>
-      <pubDate>Sat, 26 Jul 2025 00:00:00 +0000</pubDate>
+      <pubDate>Mon, 04 Aug 2025 00:00:00 +0000</pubDate>
       <guid>http://localhost:1313/posts/building-a-database-part2-wal-and-compaction/</guid>
       <description>Small summary</description>
     </item>
     <item>
       <title>Building a database (part 1): Memory tables and writing to disk</title>
       <link>http://localhost:1313/posts/building-a-database-part1-memtable-sstable/</link>
-      <pubDate>Tue, 01 Jul 2025 00:00:00 +0000</pubDate>
+      <pubDate>Fri, 01 Aug 2025 00:00:00 +0000</pubDate>
       <guid>http://localhost:1313/posts/building-a-database-part1-memtable-sstable/</guid>
       <description>In this part I will cover the basic concepts of a database engine, including memory tables and writing to disk.</description>
     </item>
