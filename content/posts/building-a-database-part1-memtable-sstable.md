@@ -416,64 +416,50 @@ func (writer *SSTableWriter) writeFromMemtable(memtable *Memtable) error {
 ````
 
 ### Searching in the SSTable
-We can now do a very simple lookup in the table. This implementation is just to try it out, later we'll replace this with a faster solution.
+We can now do a very simple lookup in the table. This implementation is just to try it out, later we'll replace this with a faster solution. It would be nice if we could reuse the deserialize function we wrote earlier. However, that function takes a byte slice. It would be better if it takes a buffer, so we can just borrow our reader buffer to it. This is actually very easy, the function already uses a buffer internally! 
 
-To prevent having to load the entire file in from memory we use the bufio package.
+The first few lines of the function right now are:
+```go
+func (entry *Entry) deserialize(entryBytes []byte) error {
+	buf := bytes.NewBuffer(entryBytes)
+```
+
+Let's change to that 
+```go
+func (entry *Entry) deserialize(buf *bufio.Reader) error {
+
+```
+
+We also update the mustReadN and mustReadByte function signatures:
+
+```go
+func mustReadN(buf *bufio.Reader, n int) ([]byte, error)
+func mustReadByte(buf *bufio.Reader) (byte, error)
+```
+(I also changed some of the tests to support this new function signature, but you can check out the final code to see those (minor) changes.)
+
+This is great, now we can reuse the deserialize function much better. Let's move on to the search function. We'll create a function that reads the next entry from a SSTable. To prevent having to load the entire file in from memory and read efficiently from disk we use the bufio package again.
 ```go
 func (reader *SSTableReader) readNextEntry() (Entry, error) {
-	blockSize := 100
-	idSize := make([]byte, 1)
-
 	for { //If the size is 0, it's padding in a block. Keep looking until a new block or EOF
-		_, err := reader.buffer.Read(idSize)
+		idSize, err := reader.buffer.Peek(1)
 
 		if err != nil {
 			return Entry{}, err
 		}
 
-		if idSize[0] != byte(0) {
-			//Try to read next block into buffer
-			reader.buffer.Peek(blockSize)
-			break
-		} else {
+		if idSize[0] == byte(0) {
+			reader.buffer.ReadByte() //Consume the zero byte
 			continue
 		}
+
+		reader.buffer.Peek(config.BlockSize)
+		break
 	}
-
-	id := make([]byte, int(idSize[0]))
-	_, err := reader.buffer.Read(id)
-	if err != nil {
-		return Entry{}, err
-	}
-
-	deleted := make([]byte, 1)
-	_, err = reader.buffer.Read(deleted)
-	if err != nil {
-		return Entry{}, err
-	}
-
-	valueLength := make([]byte, 1)
-	_, err = reader.buffer.Read(valueLength)
-	if err != nil {
-		return Entry{}, err
-	}
-
-	value := make([]byte, valueLength[0])
-	_, err = reader.buffer.Read(value)
-
-	if err != nil {
-		return Entry{}, err
-	}
-
-	all := []byte{}
-	all = append(all, idSize...)
-	all = append(all, id...)
-	all = append(all, deleted...)
-	all = append(all, valueLength...)
-	all = append(all, value...)
 
 	entry := Entry{}
-	entry.deserialize(all)
+	entry.deserialize(reader.buffer)
+
 	return entry, nil
 }
 
