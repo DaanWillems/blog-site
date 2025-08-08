@@ -13,6 +13,8 @@ showTags: false
 
 In this part we'll improve the persistence and crash resistance of the database. We will also start to work on organizing multiple SSTables on disk.
 
+All the code from this part can be found [here](https://github.com/DaanWillems/db/tree/main/parts/part2)
+
 ## Combining the Memtable and SSTable
 
 [In the previous part]({{< relref "posts/building-a-database-part1-memtable-sstable.md" >}}), we coded a simple Memtable and SSTable to store data. The next step is two combine these two parts behind one interface. This will become the 'storage engine', the component of the database that is in charge of writing, reading and organizing in disk.
@@ -57,12 +59,11 @@ func Insert(id int, values []string) {
 	memtable.Insert(entry)
 
 	if memtable.entries.Len() >= config.MemtableSize {
-		table, err := createSSTableFromMemtable(&memtable, 10)
+		writer := newSSTableWriterFromPath("data.db")
+		err := writer.writeFromMemtable(memtable)
 		if err != nil {
 			panic(err)
 		}
-
-		table.Flush("./test.db")
 
 		memtable = newMemtable() // Reset memtable after flushing
 	}
@@ -71,24 +72,17 @@ func Insert(id int, values []string) {
 The insert function is also responsible for flushing and refreshing the memtable when it exceeds the maximum number of entries
 
 ```go
-func Query(id int) ([]byte, error) {
+func Query(id []byte]) ([]byte, error) {
 	//First check in the memtable
-	entry := memtable.Get([]byte{byte(id)})
+	entry := memtable.Get(id)
 
 	if entry != nil {
 		return entry.values[0], nil
 	}
 
 	//For now we only have the capability of writing and reading a single sstable from disk
-	fd, err := os.Open("./test.db")
-
-	if err != nil {
-		panic(err)
-	}
-
-	reader := bufio.NewReader(fd) // creates a new reader
-
-	entry, err = searchInSSTable(reader, []byte{byte(id)})
+	reader := newSSTableReaderFromPath(fmt.Sprintf("./test.db"))
+	entry, err = reader.scan(id)
 
 	if err != nil {
 		panic(err)
@@ -197,33 +191,28 @@ writeEntryToWal(entry)
 memtable.Insert(entry)
 ```
 
-## File ledger
-Right now the data is always written to the file 'data.db'. This works well, until we want to flush the memtable a second time. We need a system for maintaining multiple files on disk. The storage engine needs to know which files already exist and can be searched.
+## File manager
+Right now the data is always written to the file 'data.db'. This works well, until we want to flush the memtable a second time. We need a system for maintaining multiple files on disk. The storage engine needs to know which files already exist and can be searched. It is also useful to which file are currently opened by the database. 
 
 We'll start by making a dedicated directory for storing data, we can also place the WAL in this directory. Instead of writing to 'data.db' when flushing to disk, a unique name is generated for each new file. This way we can store data in more than one file.
 
-In order to keep track of what files contain data, we have to do some book keeping. Each time we add a new file, we'll also add the new file name to a ledger file. When we want to look for data in the storage engine, we can first do a lookup to see which files are available, and search them until we find what we are looking for.
+In order to keep track of what files contain data, we have to do some book keeping. Each time we add a new file, we'll also add the new file name to a ledger file. When we want to look for data in the storage engine, we can first do a lookup to see which files are available, and search them until we find what we are looking for. 
+
+Right now we are also opening files all over the place. Lets create 2 functions for opening read and write files and use those instead. These functions will also keep track of which files are currently opened. 
 
 ledger.go:
 ```go
-package storage
-
-import (
-	"bufio"
-	"fmt"
-	"os"
-	"time"
-)
-
-type FileLedger struct {
-	loaded     bool
-	ledgerFile *os.File
-	ledger     []string
+type FileManager struct {
+	loaded         bool
+	ledgerFile     *os.File
+	ledger         []string
+	openReadFiles  map[string]*os.File
+	openWriteFiles map[string]*os.File
 }
 
-var fileLedger FileLedger
+var fileManager FileManager
 
-func closeLedger() {
+func (fileLedger *FileManager) close() {
 	if !fileLedger.loaded {
 		panic("File ledger is not loaded")
 	}
@@ -231,8 +220,14 @@ func closeLedger() {
 	fileLedger.ledgerFile.Close()
 }
 
-func loadFileLedger(path string) {
-	indexFile, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+func initFileManager(path string) {
+	fileManager = FileManager{
+		loaded:         true,
+		openReadFiles:  map[string]*os.File{},
+		openWriteFiles: map[string]*os.File{},
+	}
+
+	indexFile, err := fileManager.openWriteFile(path)
 	if err != nil {
 		panic(err)
 	}
@@ -248,47 +243,74 @@ func loadFileLedger(path string) {
 		fmt.Println(err)
 	}
 
-	fileLedger = FileLedger{
-		ledgerFile: indexFile,
-		ledger:     dataFiles,
-		loaded:     true,
-	}
+	fileManager.ledgerFile = indexFile
+	fileManager.ledger = dataFiles
 }
 
-func getDataIndex() []string {
+func (fileLedger *FileManager) getDataIndex() []string {
 	return fileLedger.ledger
 }
 
-func addFileToLedger(fileName string) {
+func (fileLedger *FileManager) openWriteFile(path string) (*os.File, error) {
+	if val, ok := fileLedger.openWriteFiles[path]; ok {
+		return val, nil
+	}
+	fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+
+	if err != nil {
+		return nil, err
+	}
+
+	fileLedger.openWriteFiles[path] = fd
+
+	return fd, nil
+}
+
+func (fileLedger *FileManager) openReadFile(path string) (*os.File, error) {
+	if val, ok := fileLedger.openReadFiles[path]; ok {
+		return val, nil
+	}
+	fd, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	fileLedger.openReadFiles[path] = fd
+
+	return fd, nil
+}
+
+func (fileLedger *FileManager) addFileToLedger(fileName string) {
 	fileLedger.ledger = append(fileLedger.ledger, fileName)
 	fileLedger.ledgerFile.Write([]byte(fileName + "\n"))
 	fileLedger.ledgerFile.Sync()
 }
 
-func writeDataFile(memtable *Memtable) {
+func (fileLedger *FileManager) writeDataFile(memtable *Memtable) {
 	if !fileLedger.loaded {
 		panic("databaseFileStructure is not loaded")
 	}
 
 	fileName := fmt.Sprintf("%v", time.Now().UnixNano())
-	fd, _ := os.Create(fmt.Sprintf("./data/%v", fileName))
-	writer := newSSTableWriter(bufio.NewWriter(fd))
+	writer := newSSTableWriterFromPath(fmt.Sprintf("./%v/%v", config.DataDirectory, fileName))
 	err := writer.writeFromMemtable(memtable)
 
 	if err != nil {
 		panic(err)
 	}
 
-	addFileToLedger(fileName)
+	fileLedger.addFileToLedger(fileName)
 }
-```
 
-We'll add this to the storage engine:
+```
+We replace all os.Open and os.OpenFile calls in the code with our new openWriteFile and openReadFile functions.
+
+The file manager is initialized in the storage engine:
 
 ```go
 func InitializeStorageEngine(cfg Config) {
 	memtable = newMemtable()
-	loadFileLedger(fmt.Sprintf("./%v/ledger", cfg.DataDirectory))
+	initFileManager(fmt.Sprintf("./%v/ledger", cfg.DataDirectory))
 	replayWal(fmt.Sprintf("./%v/wal", cfg.DataDirectory))
 	openWAL(fmt.Sprintf("./%v/wal", cfg.DataDirectory))
 	config = cfg
@@ -299,7 +321,7 @@ Let's also add a close function for neatly closing the database.
 ```go
 func Close() {
 	closeWAL()
-	closeLedger()
+	fileManager.close()
 }
 ````
 

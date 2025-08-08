@@ -21,6 +21,9 @@ This post is the first part of building a simple database engine from scratch. I
 - Key components of a database engine (WAL, Memtable, SSTables)
 - First steps in implementation (in Go)
 
+All the code from this part can be found [here](https://github.com/DaanWillems/db/tree/main/parts/part1)
+
+
 In follow up posts I will try and optimize the database and also expand upon its functionality:
 - [Part 2 can be found here]({{< relref "posts/building-a-database-part2-wal-and-compaction.md" >}})
 
@@ -156,7 +159,7 @@ Let's start implementing some of the basic building blocks of the database. I ha
 
 First we implement the memtable component. We need the memtable to be able to support different types of table structures later on, so let's design it with that in mind.
 
-We'll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and a list of values. For now the primary key will be encoded as bytes, and the values will be a list of byte arrays. This allows us to store an type of data in the database, later on we might change this to better support our schema mechanism.
+We'll maintain an ordered list of entries. Each entry has a primary key, a deleted flag and value. For now the primary key will be encoded as bytes, and the values will be a list of byte arrays. This allows us to store an type of data in the database, later on we might change this to better support our schema mechanism.
 
 ```go
 type Memtable struct {
@@ -173,43 +176,42 @@ type Entry struct {
 The memtable has functions for insert / update / get
 
 ```go
-func (m *Memtable) Get(id []byte) *MemtableEntry {
-    for e := m.entries.Front(); e != nil; e = e.Next() {
-		if bytes.Equal(id, e.Value.(MemtableEntry).id) {
-			entry := e.Value.(MemtableEntry)
+func newMemtable() Memtable {
+	return Memtable{
+		entries: list.New(),
+	}
+}
+
+func (m *Memtable) get(id []byte) *Entry {
+	for e := m.entries.Front(); e != nil; e = e.Next() {
+		if bytes.Equal(id, e.Value.(Entry).id) {
+			entry := e.Value.(Entry)
 			return &entry
 		}
 	}
 	return nil
 }
 
-func (m *Memtable) Update(id []byte, values [][]byte) {
-	entry := MemtableEntry{
+func (m *Memtable) update(id []byte, value []byte) {
+
+	entry := Entry{
 		id:      id,
-		values:  values,
+		value:   value,
 		deleted: false,
 	}
 
 	for e := m.entries.Front(); e != nil; e = e.Next() {
-		if bytes.Equal(e.Value.(MemtableEntry).id, id) {
+		if bytes.Equal(e.Value.(Entry).id, id) {
 			e.Value = entry
 			return
 		}
 	}
-	return
 }
 
-func (m *Memtable) Insert(id []byte, values [][]byte) {
-
-	entry := MemtableEntry{
-		id:      id,
-		values:  values,
-		deleted: false,
-	}
-
+func (m *Memtable) insert(entry Entry) {
 	for e := m.entries.Front(); e != nil; e = e.Next() {
 		next := e.Next()
-		if next != nil && bytes.Compare(id, next.Value.(MemtableEntry).id) == -1 {
+		if next != nil && bytes.Compare(entry.id, next.Value.(Entry).id) == -1 {
 			m.entries.InsertBefore(entry, next)
 			return
 		}
@@ -334,19 +336,25 @@ type SSTableWriter struct {
 }
 
 type SSTableReader struct {
-	reader     *bufio.Reader
+	buffer    *bufio.Reader
+	rawBuffer *bytes.Buffer
+	file      *os.File
 }
 
-func newSSTableReader(buffer *bufio.Reader) SSTableReader {
+func newSSTableReader(rawBuffer *bytes.Buffer) SSTableReader {
 	return SSTableReader{
-		reader:     buffer,
+		buffer:    bufio.NewReader(rawBuffer),
+		rawBuffer: rawBuffer,
 	}
 }
 
 func newSSTableReaderFromPath(path string) SSTableReader {
 	fd, err := os.Open(path)
 	panicIfErr(err)
-	return newSSTableReader(bufio.NewReader(fd))
+	return SSTableReader{
+		buffer: bufio.NewReader(fd),
+		file:   fd,
+	}
 }
 
 func newSSTableWriter(buffer *bufio.Writer) SSTableWriter {
@@ -356,10 +364,13 @@ func newSSTableWriter(buffer *bufio.Writer) SSTableWriter {
 	}
 }
 
-func newSSTableWriterFromPath(path string) (*os.File, SSTableWriter) {
+func newSSTableWriterFromPath(path string) SSTableWriter {
 	fd, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	panicIfErr(err)
-	return fd, newSSTableWriter(bufio.NewWriter(fd))
+	return SSTableWriter{
+		buffer:          bufio.NewWriter(fd),
+		currentBlockLen: 0,
+	}
 }
 ```
 
@@ -410,10 +421,11 @@ We can now do a very simple lookup in the table. This implementation is just to 
 To prevent having to load the entire file in from memory we use the bufio package.
 ```go
 func (reader *SSTableReader) readNextEntry() (Entry, error) {
+	blockSize := 100
 	idSize := make([]byte, 1)
 
 	for { //If the size is 0, it's padding in a block. Keep looking until a new block or EOF
-		_, err := reader.reader.Read(idSize)
+		_, err := reader.buffer.Read(idSize)
 
 		if err != nil {
 			return Entry{}, err
@@ -421,7 +433,7 @@ func (reader *SSTableReader) readNextEntry() (Entry, error) {
 
 		if idSize[0] != byte(0) {
 			//Try to read next block into buffer
-			reader.reader.Peek(config.blockSize)
+			reader.buffer.Peek(blockSize)
 			break
 		} else {
 			continue
@@ -429,25 +441,25 @@ func (reader *SSTableReader) readNextEntry() (Entry, error) {
 	}
 
 	id := make([]byte, int(idSize[0]))
-	_, err := reader.reader.Read(id)
+	_, err := reader.buffer.Read(id)
 	if err != nil {
 		return Entry{}, err
 	}
 
 	deleted := make([]byte, 1)
-	_, err = reader.reader.Read(deleted)
+	_, err = reader.buffer.Read(deleted)
 	if err != nil {
 		return Entry{}, err
 	}
 
 	valueLength := make([]byte, 1)
-	_, err = reader.reader.Read(valueLength)
+	_, err = reader.buffer.Read(valueLength)
 	if err != nil {
 		return Entry{}, err
 	}
 
 	value := make([]byte, valueLength[0])
-	_, err = reader.reader.Read(value)
+	_, err = reader.buffer.Read(value)
 
 	if err != nil {
 		return Entry{}, err
@@ -485,10 +497,6 @@ To wrap up I'll also write a unit test to see if the SSTable is working as expec
 
 ```go
 func TestSSTable(t *testing.T) {
-	config = Config{
-		blockSize: 100,
-	}
-
 	memtable := newMemtable()
 
 	for id := range 3000 {

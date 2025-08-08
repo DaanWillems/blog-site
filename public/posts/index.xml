@@ -2,24 +2,24 @@
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
     <title>Posts on Daan Willems</title>
-    <link>http://localhost:1313/posts/</link>
+    <link>http://localhost:3326/posts/</link>
     <description>Recent content in Posts on Daan Willems</description>
     <generator>Hugo</generator>
     <language>en-us</language>
     <lastBuildDate>Mon, 04 Aug 2025 00:00:00 +0000</lastBuildDate>
-    <atom:link href="http://localhost:1313/posts/index.xml" rel="self" type="application/rss+xml" />
+    <atom:link href="http://localhost:3326/posts/index.xml" rel="self" type="application/rss+xml" />
     <item>
       <title>Building a database (part 2): Write-ahead logging and compaction</title>
-      <link>http://localhost:1313/posts/building-a-database-part2-wal-and-compaction/</link>
+      <link>http://localhost:3326/posts/building-a-database-part2-wal-and-compaction/</link>
       <pubDate>Mon, 04 Aug 2025 00:00:00 +0000</pubDate>
-      <guid>http://localhost:1313/posts/building-a-database-part2-wal-and-compaction/</guid>
+      <guid>http://localhost:3326/posts/building-a-database-part2-wal-and-compaction/</guid>
       <description>Small summary</description>
     </item>
     <item>
       <title>Building a database (part 1): Memory tables and writing to disk</title>
-      <link>http://localhost:1313/posts/building-a-database-part1-memtable-sstable/</link>
+      <link>http://localhost:3326/posts/building-a-database-part1-memtable-sstable/</link>
       <pubDate>Fri, 01 Aug 2025 00:00:00 +0000</pubDate>
-      <guid>http://localhost:1313/posts/building-a-database-part1-memtable-sstable/</guid>
+      <guid>http://localhost:3326/posts/building-a-database-part1-memtable-sstable/</guid>
       <description>In this part I will cover the basic concepts of a database engine, including memory tables and writing to disk.</description>
     </item>
   </channel>
