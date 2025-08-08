@@ -41,7 +41,7 @@
         <aside >
             <nav id="TableOfContents">
   <ul>
-    <li><a href="#combining-the-memtable-and-sstable">Combining the Memtable and SSTable</a>
+    <li><a href="#creating-the-storage-engine-interface">Creating the Storage Engine interface</a>
       <ul>
         <li><a href="#cleaning-up">Cleaning up</a></li>
       </ul>
@@ -52,19 +52,31 @@
       </ul>
     </li>
     <li><a href="#file-ledger">File ledger</a></li>
+    <li><a href="#compaction">Compaction</a></li>
     <li><a href="#conclusion">Conclusion</a></li>
   </ul>
 </nav>
         </aside>
     
 
-    <p>In this part we&rsquo;ll improve the persistence and crash resistance of the database. We will also start to work on organizing multiple SSTables on disk.</p>
-<h2 id="combining-the-memtable-and-sstable">Combining the Memtable and SSTable</h2>
-<p><a href="/posts/building-a-database-part1-memtable-sstable/">In the previous part</a>, we coded a simple Memtable and SSTable to store data. The next step is two combine these two parts behind one interface. This will become the &lsquo;storage engine&rsquo;, the component of the database that is in charge of writing, reading and organizing in disk.</p>
+    <p>In this part we&rsquo;ll improve the persistence and crash resistance of the database. We will also implement a system for managing multiple SSTables on disk. Finally, we&rsquo;ll write a compaction algorithm to merge SSTables.</p>
+<h2 id="creating-the-storage-engine-interface">Creating the Storage Engine interface</h2>
+<p><a href="/posts/building-a-database-part1-memtable-sstable/">In the previous part</a>, we coded a simple Memtable and SSTable to store data. The next step is two combine these two parts behind one interface. This will become the &lsquo;storage engine&rsquo;, the component of the database that is in charge of writing, reading and organizing in disk. The database will consist of various components, including the storage engine. Later we&rsquo;ll add a component for interpreting and executing queries as well.</p>
 <p>For now the behaviour of the storage engine can be described as follows:</p>
 <p>If we insert into the database, it should be written to the memtable. If the memtable exceeds a given size, it should be flushed to disk. When querying we should first look into the memtable, and only then into the SSTable on disk.</p>
 <h3 id="cleaning-up">Cleaning up</h3>
 <p>Before moving on, we&rsquo;ll clean up the code a bit. All code files relating to the storage engine are moved into a package. We&rsquo;ll create a storage_engine.go file that will become the entrypoint into the package. All functions not in this file will be made private.</p>
+<ul>
+<li>main.go</li>
+<li>storage_engine
+<ul>
+<li>storage_engine.go</li>
+<li>ledger.go</li>
+<li>wal.go</li>
+<li>memtable.go</li>
+</ul>
+</li>
+</ul>
 <p>In the storage_engine.go file we&rsquo;ll add logic for starting the storage engine</p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Config</span> <span style="color:#66d9ef">struct</span> {
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">MemtableSize</span>  <span style="color:#66d9ef">int</span> <span style="color:#75715e">//Threshold of entries before flushing to disk</span>
@@ -353,7 +365,20 @@ In initialize we&rsquo;ll try to replay the wal to restore the memtable, and the
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>, <span style="color:#66d9ef">nil</span>
 </span></span><span style="display:flex;"><span>}
-</span></span></code></pre></div><h2 id="conclusion">Conclusion</h2>
+</span></span></code></pre></div><h2 id="compaction">Compaction</h2>
+<p>One of the downsides of SSTables being immutable is that they can contain information that is no longer relevant. Perhaps the record has been deleted, or updated. This can cause the table to grow unnecessarily large. To address this issue we can compact tables together using a merge algorithm. During compaction we can discard irrelevant values.</p>
+<p>We will implement an iterative merge algorithm using buffered I/O. The tables themselves are already sorted, which makes it a lot easier.
+The algorithm will work as follows:</p>
+<ol>
+<li>Open <em>n</em> table files for reading, and <em>y</em> for writing</li>
+<li>Read the first key from each table</li>
+<li>Compare the keys, write the smallest key and corresponding entry to the output file.</li>
+<li>Advance the reader for the table that had the smallest key, and repeat step 3 until all but one table is exhausted. If the keys are the same, take the most recent entry.</li>
+<li>Write the remaining entries from the non-exhausted table to the output file.</li>
+<li>Close all files and delete the old tables.</li>
+</ol>
+<p>In theory, compaction can happen in the background, seperate from querying. We&rsquo;ll have to switch out the 2 input tables for the output table without confusing the query process. In other words, this operation must be atomic.</p>
+<h2 id="conclusion">Conclusion</h2>
 <p>In this part we implemented a WAL to make sure data in the memtable is crash resistant. We also added the ability to store and search multiple SSTables on disk. It&rsquo;s starting to look like an actual database!</p>
 <p>In the next part we&rsquo;ll work on a very important feature: compacting tables. We&rsquo;ll implement a background process that automatically scans and compacts SSTables to reclaim disk space and improve lookup speeds.</p>
 

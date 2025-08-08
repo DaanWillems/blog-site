@@ -11,11 +11,11 @@ tags: []
 showTags: false
 ---
 
-In this part we'll improve the persistence and crash resistance of the database. We will also start to work on organizing multiple SSTables on disk.
+In this part we'll improve the persistence and crash resistance of the database. We will also implement a system for managing multiple SSTables on disk. Finally, we'll write a compaction algorithm to merge SSTables.
 
-## Combining the Memtable and SSTable
+## Creating the Storage Engine interface
 
-[In the previous part]({{< relref "posts/building-a-database-part1-memtable-sstable.md" >}}), we coded a simple Memtable and SSTable to store data. The next step is two combine these two parts behind one interface. This will become the 'storage engine', the component of the database that is in charge of writing, reading and organizing in disk.
+[In the previous part]({{< relref "posts/building-a-database-part1-memtable-sstable.md" >}}), we coded a simple Memtable and SSTable to store data. The next step is two combine these two parts behind one interface. This will become the 'storage engine', the component of the database that is in charge of writing, reading and organizing in disk. The database will consist of various components, including the storage engine. Later we'll add a component for interpreting and executing queries as well.
 
 For now the behaviour of the storage engine can be described as follows:
 
@@ -24,6 +24,13 @@ If we insert into the database, it should be written to the memtable. If the mem
 ### Cleaning up
 
 Before moving on, we'll clean up the code a bit. All code files relating to the storage engine are moved into a package. We'll create a storage_engine.go file that will become the entrypoint into the package. All functions not in this file will be made private.
+
+- main.go
+- storage_engine
+  - storage_engine.go
+  - ledger.go
+  - wal.go
+  - memtable.go
 
 In the storage_engine.go file we'll add logic for starting the storage engine
 
@@ -41,6 +48,7 @@ func InitializeStorageEngine(cfg Config) {
 	config = cfg
 }
 ```
+
 The MemtableSize is the maximum number of entries the memtable may contain before flushing to disk. At a later point it will make more sense to look at the total number of bytes in the table, as entries can vary in size.
 
 Let's write the logic for inserting data into the storage engine.
@@ -360,6 +368,20 @@ func Query(id int) ([]byte, error) {
 	return nil, nil
 }
 ```
+
+## Compaction
+One of the downsides of SSTables being immutable is that they can contain information that is no longer relevant. Perhaps the record has been deleted, or updated. This can cause the table to grow unnecessarily large. To address this issue we can compact tables together using a merge algorithm. During compaction we can discard irrelevant values.
+
+We will implement an iterative merge algorithm using buffered I/O. The tables themselves are already sorted, which makes it a lot easier.
+The algorithm will work as follows:
+1. Open _n_ table files for reading, and _y_ for writing
+2. Read the first key from each table
+3. Compare the keys, write the smallest key and corresponding entry to the output file.
+4. Advance the reader for the table that had the smallest key, and repeat step 3 until all but one table is exhausted. If the keys are the same, take the most recent entry.
+5. Write the remaining entries from the non-exhausted table to the output file.
+6. Close all files and delete the old tables.
+
+In theory, compaction can happen in the background, seperate from querying. We'll have to switch out the 2 input tables for the output table without confusing the query process. In other words, this operation must be atomic.
 
 ## Conclusion
 In this part we implemented a WAL to make sure data in the memtable is crash resistant. We also added the ability to store and search multiple SSTables on disk. It's starting to look like an actual database!
