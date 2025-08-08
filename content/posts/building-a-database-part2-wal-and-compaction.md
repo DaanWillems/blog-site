@@ -17,7 +17,7 @@ All the code from this part can be found [here](https://github.com/DaanWillems/d
 
 ## Combining the Memtable and SSTable
 
-[In the previous part]({{< relref "posts/building-a-database-part1-memtable-sstable.md" >}}), we coded a simple Memtable and SSTable to store data. The next step is two combine these two parts behind one interface. This will become the 'storage engine', the component of the database that is in charge of writing, reading and organizing in disk.
+[In the previous part]({{< relref "posts/building-a-database-part1-memtable-sstable.md" >}}), we coded a simple Memtable and SSTable to store data. The next step is to combine these two parts behind one interface. This will become the 'storage engine', the component of the database that is in charge of writing, reading and organizing on disk.
 
 For now the behaviour of the storage engine can be described as follows:
 
@@ -72,7 +72,7 @@ func Insert(id int, values []string) {
 The insert function is also responsible for flushing and refreshing the memtable when it exceeds the maximum number of entries
 
 ```go
-func Query(id []byte]) ([]byte, error) {
+func Query(id []byte) ([]byte, error) {
 	//First check in the memtable
 	entry := memtable.Get(id)
 
@@ -100,7 +100,7 @@ To avoid this problem we can keep a separate file on disk to which all database 
 
 Should our program crash, we can read and 'replay' the WAL to restore the state of the memtable. Once the memtable gets written to disk we can discard the WAL.
 
-The format for writing to the WAL is very simple, we'll serialize each entry and write the length of content + the content of the entry. This will also us to very easily read  it back. We'll also need a method for clearing the WAL once the memtable gets written.
+The format for writing to the WAL is very simple, we'll serialize each entry and write the length of content + the content of the entry. This will also allow us to easily read it back. We'll also need a method for clearing the WAL once the memtable gets written.
 
 ```go
 var wal_file *os.File
@@ -124,7 +124,7 @@ func resetWAL() {
 	}
 }
 
-func writeEntryToWal(entry MemtableEntry) {
+func writeEntryToWal(entry Entry) {
 	len, content := entry.Serialize()
 	wal_file.Write([]byte{byte(len)})
 	wal_file.Write(content)
@@ -137,9 +137,12 @@ func writeEntryToWal(entry MemtableEntry) {
 When the application starts, it should try to open the WAL into read mode and restore the memtable. We'll start by reading the first byte to get the entry size, and then the entry which gets deserialized and inserted into the memtable. We continue until there are no more entries to read. Conveniently the memtable object is accessible to us as it's all in the database package.
 
 ```go
-func ReplayWal() {
-	fd, err := os.Open(wal_path)
+func replayWal(_wal_path string) {
+	fd, err := os.Open(_wal_path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
 		panic(err)
 	}
 	defer fd.Close()
@@ -164,10 +167,10 @@ func ReplayWal() {
 			panic(err)
 		}
 
-		entry := &MemtableEntry{}
-		entry.Deserialize(content)
+		entry := &Entry{}
+		entry.deserialize(bufio.NewReader(bytes.NewBuffer(content)))
 
-		memtable.Insert(*entry)
+		memtable.insert(*entry)
 	}
 }
 ```
@@ -192,13 +195,80 @@ memtable.Insert(entry)
 ```
 
 ## File manager
-Right now the data is always written to the file 'data.db'. This works well, until we want to flush the memtable a second time. We need a system for maintaining multiple files on disk. The storage engine needs to know which files already exist and can be searched. It is also useful to which file are currently opened by the database. 
+Right now the data is always written to the file 'data.db'. This works well, until we want to flush the memtable a second time. We need a system for maintaining multiple files on disk. The storage engine needs to know which files already exist and can be searched. It is also useful to know which file are currently opened by the database. 
 
 We'll start by making a dedicated directory for storing data, we can also place the WAL in this directory. Instead of writing to 'data.db' when flushing to disk, a unique name is generated for each new file. This way we can store data in more than one file.
 
-In order to keep track of what files contain data, we have to do some book keeping. Each time we add a new file, we'll also add the new file name to a ledger file. When we want to look for data in the storage engine, we can first do a lookup to see which files are available, and search them until we find what we are looking for. 
+First, it makes sense to unify our file opening and closing. Right now we are also opening files all over the place. Lets create a filemanager two functions for opening read and write files and use those instead. These functions will also keep track of which files are currently opened. 
 
-Right now we are also opening files all over the place. Lets create 2 functions for opening read and write files and use those instead. These functions will also keep track of which files are currently opened. 
+```go
+type FileManager struct {
+	openReadFiles  map[string]*os.File
+	openWriteFiles map[string]*os.File
+}
+
+var fileManager FileManager
+
+func initFileManager(path string) {
+	fileManager = FileManager{
+		loaded:         true,
+		openReadFiles:  map[string]*os.File{},
+		openWriteFiles: map[string]*os.File{},
+	}
+}
+
+func (fileManager *FileManager) openWriteFile(path string) (*os.File, error) {
+	if val, ok := fileManager.openWriteFiles[path]; ok {
+		return val, nil
+	}
+	fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+
+	if err != nil {
+		return nil, err
+	}
+
+	fileManager.openWriteFiles[path] = fd
+
+	return fd, nil
+}
+
+func (fileManager *FileManager) openReadFile(path string) (*os.File, error) {
+	if val, ok := fileManager.openReadFiles[path]; ok {
+		return val, nil
+	}
+	fd, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	fileManager.openReadFiles[path] = fd
+
+	return fd, nil
+}
+
+func (fileManager *FileManager) close() {
+	if fileManager.loaded {
+		fileManager.ledgerFile.Close()
+	}
+
+	for _, fd := range fileManager.openReadFiles {
+		err := fd.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	for _, fd := range fileManager.openWriteFiles {
+		err := fd.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+```
+We can now call fileManager.openReadFile(path) or fileManager.openWriteFile(path) and the filemanager will keep track of what files are open. 
+
+In order to keep track of what files contain data, we have to do some additional book keeping. Each time we write a new SSTable to disk, we'll also add the new file name to a ledger file. When we want to look for data in the storage engine, we can first do a lookup to see which files are available, and search them until we find what we are looking for. 
 
 ledger.go:
 ```go
@@ -211,14 +281,6 @@ type FileManager struct {
 }
 
 var fileManager FileManager
-
-func (fileLedger *FileManager) close() {
-	if !fileLedger.loaded {
-		panic("File ledger is not loaded")
-	}
-
-	fileLedger.ledgerFile.Close()
-}
 
 func initFileManager(path string) {
 	fileManager = FileManager{
@@ -247,47 +309,18 @@ func initFileManager(path string) {
 	fileManager.ledger = dataFiles
 }
 
-func (fileLedger *FileManager) getDataIndex() []string {
-	return fileLedger.ledger
+func (fileManager *FileManager) getDataIndex() []string {
+	return fileManager.ledger
 }
 
-func (fileLedger *FileManager) openWriteFile(path string) (*os.File, error) {
-	if val, ok := fileLedger.openWriteFiles[path]; ok {
-		return val, nil
-	}
-	fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
-
-	if err != nil {
-		return nil, err
-	}
-
-	fileLedger.openWriteFiles[path] = fd
-
-	return fd, nil
+func (fileManager *FileManager) addFileToLedger(fileName string) {
+	fileManager.ledger = append(fileManager.ledger, fileName)
+	fileManager.ledgerFile.Write([]byte(fileName + "\n"))
+	fileManager.ledgerFile.Sync()
 }
 
-func (fileLedger *FileManager) openReadFile(path string) (*os.File, error) {
-	if val, ok := fileLedger.openReadFiles[path]; ok {
-		return val, nil
-	}
-	fd, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-
-	fileLedger.openReadFiles[path] = fd
-
-	return fd, nil
-}
-
-func (fileLedger *FileManager) addFileToLedger(fileName string) {
-	fileLedger.ledger = append(fileLedger.ledger, fileName)
-	fileLedger.ledgerFile.Write([]byte(fileName + "\n"))
-	fileLedger.ledgerFile.Sync()
-}
-
-func (fileLedger *FileManager) writeDataFile(memtable *Memtable) {
-	if !fileLedger.loaded {
+func (fileManager *FileManager) writeDataFile(memtable *Memtable) {
+	if !fileManager.loaded {
 		panic("databaseFileStructure is not loaded")
 	}
 
@@ -299,12 +332,10 @@ func (fileLedger *FileManager) writeDataFile(memtable *Memtable) {
 		panic(err)
 	}
 
-	fileLedger.addFileToLedger(fileName)
+	fileManager.addFileToLedger(fileName)
 }
 
 ```
-We replace all os.Open and os.OpenFile calls in the code with our new openWriteFile and openReadFile functions.
-
 The file manager is initialized in the storage engine:
 
 ```go
@@ -330,7 +361,7 @@ Finally let's update the insert and query functions so they use the ledger.
 ```go
 func Insert(id int, value []byte) {
 	entry := Entry{
-		id:      []byte{byte(id)},
+		id:      IntToBytes(id),
 		value:   value,
 		deleted: false,
 	}
@@ -339,25 +370,23 @@ func Insert(id int, value []byte) {
 	memtable.insert(entry)
 
 	if memtable.entries.Len() >= config.MemtableSize {
-		writeDataFile(&memtable)
+		fileManager.writeDataFile(&memtable)
 		memtable = newMemtable() // Reset memtable after flushing
 		resetWAL()               //Discard the WAL
 	}
 }
 
-func Query(id int) ([]byte, error) {
+func Query(id []byte) ([]byte, error) {
 	//First check in the memtable
-	entry := memtable.Get([]byte{byte(id)})
+	entry := memtable.Get(id)
 
 	if entry != nil {
 		return entry.value, nil
 	}
 
-	for _, path := range getDataIndex() {
-		fd, err := os.Open(fmt.Sprintf("./data/%v", path))
-		panicIfErr(err)
-
-		entry, err := scanSSTable(bufio.NewReader((fd)), []byte{byte(id)})
+	for _, path := range fileManager.getDataIndex() {
+		reader := newSSTableReaderFromPath(fmt.Sprintf("./data/%v", path))
+		entry, err := reader.scan(id)
 
 		if err != nil {
 			panic(err)
@@ -374,7 +403,107 @@ func Query(id int) ([]byte, error) {
 }
 ```
 
-## Conclusion
-In this part we implemented a WAL to make sure data in the memtable is crash resistant. We also added the ability to store and search multiple SSTables on disk. It's starting to look like an actual database!
+## Compaction
+One of the downsides of SSTables being immutable is that they can contain information that is no longer relevant. Perhaps the record has been deleted, or updated. This can cause the table to grow unnecessarily large. To address this issue we can compact tables together using a merge algorithm. During compaction we can discard irrelevant values.
 
-In the next part we'll work on a very important feature: compacting tables. We'll implement a background process that automatically scans and compacts SSTables to reclaim disk space and improve lookup speeds.
+We will implement an iterative merge algorithm using buffered I/O. The tables themselves are already sorted, which makes it a lot easier.
+The algorithm will work as follows:
+1. Open _n_ table files for reading, and 1 for writing
+2. Read the first key from each table
+3. Compare the keys, write the smallest key and corresponding entry to the output file. If the keys are the same, take the most recent entry.
+4. Advance the reader for the tables, and repeat step 3 until all but one table is exhausted. 
+5. Write the remaining entries from the non-exhausted table to the output file.
+6. Close all files and delete the old tables.
+
+There are several different strategies we can choose from that decide when tables get compacted. Usually compaction with one of these strategies will run in the background. For now we will just focus on implementing the merge algorithm. The next part will dive into compaction strategies. 
+
+We implement a function 'getNextEntry', this will function accepts _n_ readers and returns the 'first' entry, sorted on ID value and insertion time. The function assumes that the readers are sorted from oldest to most recent. It also advances all readers approporiately. 
+
+It works by iterating the readers, and peeking (not reading) the ID of the next entry. It keeps track of the lowest entry ID it has encountered in the _min_ and _outputReaders_ variables. If it encounters an entry with an identical ID of the entry with the lowest ID so far it, it adds the additional new reader to _outputReaders_. If however a new lowest ID is found, the state is cleared and only this most recent one gets stored.
+
+Next, it advances all the readers available in _outputReaders_ and returns the smallest entry. This step discards older duplicate values.
+
+```go
+func getNextEntry(readers []*SSTableReader) (*Entry, []*SSTableReader) {
+	var min []byte
+	outputReaders := []*SSTableReader{} 
+	emptyReaders := []*SSTableReader{}
+
+	//Get reader with smallest key
+	//Its assumed that readers are ordered oldest to newest
+	for _, reader := range readers {
+		id, err := reader.peekNextId()
+		if checkEOF(err) {
+			emptyReaders = append(emptyReaders, reader)
+			continue
+		}
+
+		if min == nil {
+			min = id
+			outputReaders = append(outputReaders, reader)
+		} else if bytes.Compare(id, min) == -1 {
+			min = id
+			outputReaders := []*SSTableReader{}
+			outputReaders = append(outputReaders, reader)
+		} else if bytes.Equal(id, min) {
+			outputReaders = append(outputReaders, reader)
+		}
+	}
+
+	var entry Entry
+
+	for _, reader := range outputReaders {
+		entry, _ = reader.readNextEntry() //use the latest (most recent) newest entry
+	}
+
+	return &entry, emptyReaders
+}
+```
+
+This function gets called by compactNNTablen which writes the entries to the new table, and removes readers from the state if they are exhausted. If all but 1 readers are exhaused, this function writes the remaining entries from the last table to the output table.
+
+```go
+func compactNSSTables(inputs []*SSTableReader, output *SSTableWriter) error {
+	for {
+		entry, emptyReaders := getNextEntry(inputs)
+		output.writeSingleEntry(entry)
+
+		for _, emptyReader := range emptyReaders {
+			for index, reader := range inputs {
+				if reader == emptyReader {
+					//Remove from map
+					inputs = append(inputs[:index], inputs[index+1:]...)
+				}
+			}
+		}
+
+		if len(inputs) == 0 {
+			return nil
+		}
+
+		if len(inputs) == 1 {
+			for _, remainder := range inputs {
+				for {
+					entry, err := remainder.readNextEntry()
+					if checkEOF(err) {
+						return nil
+					}
+					if err != nil {
+						return err
+					}
+					output.writeSingleEntry(&entry)
+				}
+			}
+		}
+	}
+}
+```
+Merging tables is very performant as we can rely on the sorted nature of the tables. It only needs sequential IO to access all the values, which is super quick. 
+
+To make sure this is working correctly, I have written a number of tests. As this is quite a lot of code to include in this post, I have decided to leave them out. However you can find them [here in the repository](https://github.com/DaanWillems/db/blob/main/parts/part2/storage/compact_test.go)
+
+
+## Conclusion
+In this part we implemented a WAL to make sure data in the memtable is crash resistant. We also added the ability to store & search multiple SSTables on disk, and an algorithm for compacting tables together. It's starting to look like an actual database!
+
+In the next part we'll use the compaction algorithm to implement a background process that continually compacts new tables in the background using a compaction strategy.

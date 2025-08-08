@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en-us"><head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=3326&amp;path=livereload" data-no-instant defer></script>
+<html lang="en-us"><head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=2943&amp;path=livereload" data-no-instant defer></script>
   <meta charset="utf-8" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -399,62 +399,37 @@
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>
 </span></span><span style="display:flex;"><span>}
 </span></span></code></pre></div><h3 id="searching-in-the-sstable">Searching in the SSTable</h3>
-<p>We can now do a very simple lookup in the table. This implementation is just to try it out, later we&rsquo;ll replace this with a faster solution.</p>
-<p>To prevent having to load the entire file in from memory we use the bufio package.</p>
+<p>We can now do a very simple lookup in the table. This implementation is just to try it out, later we&rsquo;ll replace this with a faster solution. It would be nice if we could reuse the deserialize function we wrote earlier. However, that function takes a byte slice. It would be better if it takes a buffer, so we can just borrow our reader buffer to it. This is actually very easy, the function already uses a buffer internally!</p>
+<p>The first few lines of the function right now are:</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">entry</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Entry</span>) <span style="color:#a6e22e">deserialize</span>(<span style="color:#a6e22e">entryBytes</span> []<span style="color:#66d9ef">byte</span>) <span style="color:#66d9ef">error</span> {
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">buf</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">bytes</span>.<span style="color:#a6e22e">NewBuffer</span>(<span style="color:#a6e22e">entryBytes</span>)
+</span></span></code></pre></div><p>Let&rsquo;s change to that</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">entry</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Entry</span>) <span style="color:#a6e22e">deserialize</span>(<span style="color:#a6e22e">buf</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Reader</span>) <span style="color:#66d9ef">error</span> {
+</span></span></code></pre></div><p>We also update the mustReadN and mustReadByte function signatures:</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">mustReadN</span>(<span style="color:#a6e22e">buf</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Reader</span>, <span style="color:#a6e22e">n</span> <span style="color:#66d9ef">int</span>) ([]<span style="color:#66d9ef">byte</span>, <span style="color:#66d9ef">error</span>)
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">mustReadByte</span>(<span style="color:#a6e22e">buf</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">bufio</span>.<span style="color:#a6e22e">Reader</span>) (<span style="color:#66d9ef">byte</span>, <span style="color:#66d9ef">error</span>)
+</span></span></code></pre></div><p>(I also changed some of the tests to support this new function signature, but you can check out the final code to see those (minor) changes.)</p>
+<p>This is great, now we can reuse the deserialize function much better. Let&rsquo;s move on to the search function. We&rsquo;ll create a function that reads the next entry from a SSTable. To prevent having to load the entire file in from memory and read efficiently from disk we use the bufio package again.</p>
 <div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-go" data-lang="go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">reader</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">SSTableReader</span>) <span style="color:#a6e22e">readNextEntry</span>() (<span style="color:#a6e22e">Entry</span>, <span style="color:#66d9ef">error</span>) {
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">blockSize</span> <span style="color:#f92672">:=</span> <span style="color:#ae81ff">100</span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">idSize</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
-</span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">for</span> { <span style="color:#75715e">//If the size is 0, it&#39;s padding in a block. Keep looking until a new block or EOF</span>
-</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">idSize</span>)
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">idSize</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Peek</span>(<span style="color:#ae81ff">1</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
 </span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">Entry</span>{}, <span style="color:#a6e22e">err</span>
 </span></span><span style="display:flex;"><span>		}
 </span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">idSize</span>[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">!=</span> byte(<span style="color:#ae81ff">0</span>) {
-</span></span><span style="display:flex;"><span>			<span style="color:#75715e">//Try to read next block into buffer</span>
-</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Peek</span>(<span style="color:#a6e22e">blockSize</span>)
-</span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">break</span>
-</span></span><span style="display:flex;"><span>		} <span style="color:#66d9ef">else</span> {
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">idSize</span>[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">==</span> byte(<span style="color:#ae81ff">0</span>) {
+</span></span><span style="display:flex;"><span>			<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">ReadByte</span>() <span style="color:#75715e">//Consume the zero byte</span>
 </span></span><span style="display:flex;"><span>			<span style="color:#66d9ef">continue</span>
 </span></span><span style="display:flex;"><span>		}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>		<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Peek</span>(<span style="color:#a6e22e">config</span>.<span style="color:#a6e22e">BlockSize</span>)
+</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">break</span>
 </span></span><span style="display:flex;"><span>	}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">id</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, int(<span style="color:#a6e22e">idSize</span>[<span style="color:#ae81ff">0</span>]))
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">id</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">Entry</span>{}, <span style="color:#a6e22e">err</span>
-</span></span><span style="display:flex;"><span>	}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">deleted</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">deleted</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">Entry</span>{}, <span style="color:#a6e22e">err</span>
-</span></span><span style="display:flex;"><span>	}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">valueLength</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#ae81ff">1</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">valueLength</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">Entry</span>{}, <span style="color:#a6e22e">err</span>
-</span></span><span style="display:flex;"><span>	}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">value</span> <span style="color:#f92672">:=</span> make([]<span style="color:#66d9ef">byte</span>, <span style="color:#a6e22e">valueLength</span>[<span style="color:#ae81ff">0</span>])
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>.<span style="color:#a6e22e">Read</span>(<span style="color:#a6e22e">value</span>)
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
-</span></span><span style="display:flex;"><span>		<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">Entry</span>{}, <span style="color:#a6e22e">err</span>
-</span></span><span style="display:flex;"><span>	}
-</span></span><span style="display:flex;"><span>
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> <span style="color:#f92672">:=</span> []<span style="color:#66d9ef">byte</span>{}
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">idSize</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">id</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">deleted</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">valueLength</span><span style="color:#f92672">...</span>)
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">all</span> = append(<span style="color:#a6e22e">all</span>, <span style="color:#a6e22e">value</span><span style="color:#f92672">...</span>)
 </span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">Entry</span>{}
-</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">deserialize</span>(<span style="color:#a6e22e">all</span>)
+</span></span><span style="display:flex;"><span>	<span style="color:#a6e22e">entry</span>.<span style="color:#a6e22e">deserialize</span>(<span style="color:#a6e22e">reader</span>.<span style="color:#a6e22e">buffer</span>)
+</span></span><span style="display:flex;"><span>
 </span></span><span style="display:flex;"><span>	<span style="color:#66d9ef">return</span> <span style="color:#a6e22e">entry</span>, <span style="color:#66d9ef">nil</span>
 </span></span><span style="display:flex;"><span>}
 </span></span><span style="display:flex;"><span>
